@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (2026-10-18)
+
+### Breaking
+
+- rename legatus to playscape (#6) ([f5e0921](https://github.com/urmzd/playscape/commit/f5e0921266bbf3af68e43c47205acc6fda05d81d))
+
+### Misc
+
+- **deps**: upgrade saige example to v0.37.0 (#5) ([efa3091](https://github.com/urmzd/playscape/commit/efa309174e91a4751578248c025de1657f1ddb34))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.2.0...v0.3.0)
+
+
 ## 0.2.0 (2026-10-10)
 
 ### Breaking
