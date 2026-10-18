@@ -18,7 +18,8 @@ metrics     (leaf: Recorder; Nop, Memory)
 ngac        (leaf: NGAC policy machine — Graph, Spec, decisions)
    |
 sandbox     -> ngac, workspace    (enforcement point: ScopePDP, Policy sugar)
-tool        -> task, workspace    (Tool, Runtime, Registry)
+tool        -> task, workspace    (Tool, Runtime, Registry, Provider)
+tool/cli    -> tool               ("cli" provider: argv-templated binaries)
 queue       -> task               (Queue, Results; Memory, httpqueue)
 node        -> task, sandbox      (Node, Spec, Factory, Spawner)
 node/inproc -> node, tool, ...    (in-process execution substrate)
@@ -66,6 +67,12 @@ Deployments define access one of two ways in their `ServiceSpec`:
 2. **Full NGAC** (`access`): a declarative `ngac.Spec` (JSON-able) with attributes, associations, and prohibitions, for relationships flat policies cannot express.
 
 Enforcement: nodes never hand tools the raw workspace. `sandbox.ScopePDP` wraps it in a decision-checking decorator (the enforcement point); every read/write/delete is decided under the executing tool's name, `List` filters out keys the user cannot read, traversal (`..`, absolute keys) is rejected before any decision, and spawn attempts check the `spawn` operation against `tool:<target>` objects. Unknown users, ungoverned objects, empty graphs: all deny. The sandbox and the policy machine are a security boundary; a bypass is a vulnerability (see SECURITY.md).
+
+## Tool Providers
+
+A `tool.Provider` builds a family of tools by one mechanism, labelled by a `tool.Kind`; `Registry.RegisterProvider` registers all of a provider's tools or none. The beta ships the `cli` kind (`pkg/tool/cli`): each tool wraps one binary behind a fixed argv template whose `{name}` placeholders are filled from the task's JSON input, one argument per element, never shell-expanded. Values starting with `-` are rejected unless the spec opts in, the child environment is an explicit allowlist, and every call has a timeout and per-stream output caps. A completed run returns `{exit_code, stdout, stderr}` whatever the exit code, so the agent can react to failures.
+
+Caveat: the `cli` provider is not an isolation boundary. The binary runs on the worker host with the worker's privileges, and the workspace policy does not confine what it touches on disk. Grant `cli` tools only binaries you would run on the worker yourself.
 
 ## Self-Referential Agents
 
