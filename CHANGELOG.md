@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (2026-10-18)
+
+### Features
+
+- **tool**: add cli provider kind wrapping CLI binaries (#8) ([18d2b1c](https://github.com/urmzd/playscape/commit/18d2b1cd9f20981c5f7f52da06459d4e5105239d))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.3.0...v0.4.0)
+
+
 ## 0.3.0 (2026-10-18)
 
 ### Breaking
