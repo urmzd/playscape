@@ -78,6 +78,48 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
+// Kind names a family of tools that share one construction mechanism, such
+// as wrapping a CLI binary. Kinds are labels for configuration and
+// observability; they carry no behavior of their own.
+type Kind string
+
+// KindCLI is the kind of providers whose tools wrap a CLI binary
+// (see package tool/cli).
+const KindCLI Kind = "cli"
+
+// Provider supplies a set of tools built by one mechanism. A provider is a
+// construction-time concern: once its tools are registered they are
+// ordinary Tools, confined by the same sandbox policy as any other.
+type Provider interface {
+	// Kind reports which family of tools the provider builds.
+	Kind() Kind
+	// Tools returns the provider's tools, validated and ready to call.
+	Tools() ([]Tool, error)
+}
+
+// RegisterProvider registers every tool p supplies. It is all-or-nothing:
+// if p fails to build its tools, or any name collides with a registered
+// tool or another of p's tools, nothing is registered.
+func (r *Registry) RegisterProvider(p Provider) error {
+	tools, err := p.Tools()
+	if err != nil {
+		return fmt.Errorf("tool: %s provider: %w", p.Kind(), err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		if _, exists := r.tools[t.Name()]; exists || seen[t.Name()] {
+			return fmt.Errorf("tool: %s provider: %q already registered", p.Kind(), t.Name())
+		}
+		seen[t.Name()] = true
+	}
+	for _, t := range tools {
+		r.tools[t.Name()] = t
+	}
+	return nil
+}
+
 // Get returns the tool registered under name.
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()

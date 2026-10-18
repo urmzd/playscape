@@ -8,7 +8,7 @@ Producer/consumer over per-deployment queues. Producers (HTTP API, tools spawnin
 
 - `pkg/task`, `pkg/workspace`, `pkg/metrics`, `pkg/ngac` are leaves (stdlib only)
 - `pkg/ngac` is the NGAC policy machine where access is defined (users/attributes/associations/prohibitions); `pkg/sandbox` is the enforcement point decorating `workspace`, with flat `Policy` compiling into the same graph via `FromPolicies`
-- `pkg/tool` defines the capability unit and the `Runtime` it executes against
+- `pkg/tool` defines the capability unit, the `Runtime` it executes against, and `Provider` (a family of tools of one `Kind`); `pkg/tool/cli` is the `cli` provider kind wrapping CLI binaries
 - `pkg/queue` is the producer/consumer seam (`Memory` in-process, `httpqueue` over the API)
 - `pkg/node` + `pkg/node/inproc` define and implement the execution substrate
 - `pkg/worker` is the consumer loop shared by local and remote scaling
@@ -48,6 +48,7 @@ Full guide: `docs/architecture/overview.md`. Discover layout with `tree` or ripg
 
 ## Extension Guide
 
+- **New CLI-backed tools**: declare `cli.Spec`s (binary, argv template, env allowlist, timeout, output caps) and `registry.RegisterProvider(cli.New(specs...))`. The binary is not confined by the workspace policy; see the architecture caveat.
 - **New tool**: implement `tool.Tool` (or `tool.Func`), register it, and grant it access in the `ServiceSpec`: a flat `sandbox.Policy`, or an `ngac.Spec` under `Access` for relational grants (user attributes, prohibitions). No grant means no workspace access and no spawning.
 - **New workspace backend** (GCS/S3): implement `workspace.Workspace` in `pkg/workspace/<backend>.go`; validate keys with `workspace.ValidKey`.
 - **New queue backend**: implement `queue.Queue` + `queue.Results`; see `httpqueue` for a remote example.
