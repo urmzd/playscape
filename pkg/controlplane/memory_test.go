@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/ngac"
-	"github.com/urmzd/legatus/pkg/node/inproc"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
-	"github.com/urmzd/legatus/pkg/tool"
-	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/ngac"
+	"github.com/urmzd/playscape/pkg/node/inproc"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
+	"github.com/urmzd/playscape/pkg/tool"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 // newPlane builds a control plane with an echo tool and a parent tool that
@@ -91,8 +91,8 @@ func TestDeployScaleStatus(t *testing.T) {
 		t.Fatalf("after scale down: %+v", status)
 	}
 
-	if got := rec.Snapshot()[`legatus_nodes{deployment="svc"}`]; got != 1 {
-		t.Fatalf("legatus_nodes gauge = %v, want 1", got)
+	if got := rec.Snapshot()[`playscape_nodes{deployment="svc"}`]; got != 1 {
+		t.Fatalf("playscape_nodes gauge = %v, want 1", got)
 	}
 
 	if err := plane.Scale(ctx, "missing", 1); !errors.Is(err, controlplane.ErrNotFound) {
@@ -118,7 +118,7 @@ func TestSubmitConsumesFromQueue(t *testing.T) {
 		}
 	}
 
-	key := `legatus_tasks_total{deployment="svc",status="ok",tool="echo"}`
+	key := `playscape_tasks_total{deployment="svc",status="ok",tool="echo"}`
 	if got := rec.Snapshot()[key]; got != 6 {
 		t.Fatalf("%s = %v, want 6", key, got)
 	}

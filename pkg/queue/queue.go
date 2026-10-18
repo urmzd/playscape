@@ -1,4 +1,4 @@
-// Package queue is the producer/consumer seam of legatus. Producers (the
+// Package queue is the producer/consumer seam of playscape. Producers (the
 // control plane API, or agents spawning sub-tasks) enqueue tasks; consumers
 // (worker processes — goroutines locally, pods or serverless containers at
 // scale) compete to dequeue and execute them. Scaling out is nothing more
@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/urmzd/legatus/pkg/task"
+	"github.com/urmzd/playscape/pkg/task"
 )
 
 // ErrFull is returned by Enqueue when the queue cannot accept more tasks.

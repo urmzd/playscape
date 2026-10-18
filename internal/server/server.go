@@ -13,9 +13,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/task"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/task"
 )
 
 // New returns an http.Handler serving the beta v1 API.
@@ -32,7 +32,7 @@ import (
 //	POST /v1/deployments/{name}/tasks      {"tool","input","async"} → result, or task_id if async
 //	GET  /v1/deployments/{name}/tasks/{id} task result: {"status","result"}
 //
-// Consumer side (what `legatus work` replicas call):
+// Consumer side (what `playscape work` replicas call):
 //
 //	POST /v1/deployments/{name}/lease?wait=30s  long-poll for a task (204 when empty)
 //	POST /v1/deployments/{name}/results         report a task result

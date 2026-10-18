@@ -1,6 +1,6 @@
 # Architecture Overview
 
-legatus is a control plane for agent execution nodes. It exists so that a user can deploy a single service, scale its agents out with proper metrics, and trust that every tool is confined to the workspace areas it was granted. This document describes the beta architecture; interfaces are stabilizing but pre-1.0.
+playscape is a control plane for agent execution nodes. It exists so that a user can deploy a single service, scale its agents out with proper metrics, and trust that every tool is confined to the workspace areas it was granted. This document describes the beta architecture; interfaces are stabilizing but pre-1.0.
 
 ## Design Goals
 
@@ -39,11 +39,11 @@ Every deployment owns a queue. Producers put tasks on it; consumers compete to t
 producers                      queue                consumers
 ---------                      -----                ---------
 HTTP API  --Submit/Async-->  [ task task task ]  <--Dequeue-- local goroutines (Scale)
-tools     --Spawn---------->                     <--Lease---- legatus work pods (k8s/HPA)
+tools     --Spawn---------->                     <--Lease---- playscape work pods (k8s/HPA)
 ```
 
 - **Local scaling**: `Scale(n)` runs n worker goroutines inside the control plane process. Right default for a single binary.
-- **Remote scaling**: `legatus work --server <url> --deployment <name>` runs the same consumer loop in its own process, leasing over HTTP (long poll) and reporting results back. Kubernetes Deployments, HPAs, or serverless containers replicate this process; the control plane never changes. Deploy with `"replicas": -1` for a fleet-only deployment.
+- **Remote scaling**: `playscape work --server <url> --deployment <name>` runs the same consumer loop in its own process, leasing over HTTP (long poll) and reporting results back. Kubernetes Deployments, HPAs, or serverless containers replicate this process; the control plane never changes. Deploy with `"replicas": -1` for a fleet-only deployment.
 - The two kinds of consumers share one queue, so they can coexist.
 
 Results flow back through `queue.Results`: synchronous submitters block on `Await`, asynchronous submitters poll by task ID.
@@ -77,11 +77,11 @@ Components record through `metrics.Recorder` (counters, gauges, distributions) a
 
 | Series | Meaning |
 |--------|---------|
-| `legatus_nodes{deployment}` | current local node count |
-| `legatus_tasks_submitted_total{deployment,tool}` | tasks produced |
-| `legatus_tasks_total{deployment,tool,status}` | tasks executed locally |
-| `legatus_tasks_total{deployment,source="remote",status}` | tasks reported by remote consumers |
-| `legatus_task_seconds_{count,sum}{deployment,tool}` | execution latency |
+| `playscape_nodes{deployment}` | current local node count |
+| `playscape_tasks_submitted_total{deployment,tool}` | tasks produced |
+| `playscape_tasks_total{deployment,tool,status}` | tasks executed locally |
+| `playscape_tasks_total{deployment,source="remote",status}` | tasks reported by remote consumers |
+| `playscape_task_seconds_{count,sum}{deployment,tool}` | execution latency |
 
 A Prometheus or OpenTelemetry recorder replaces the in-memory one without any caller changing.
 
@@ -93,7 +93,7 @@ A Prometheus or OpenTelemetry recorder replaces the in-memory one without any ca
 
 - `go test ./...` covers sandbox confinement (including traversal and list-leak cases), NGAC semantics (attribute inheritance, multi-policy-class conjunction, prohibition override), queue-based scaling, policy-gated spawning, and a full remote-consumer round trip over HTTP.
 - `examples/saige/` runs real [saige](https://github.com/urmzd/saige) agents as workloads, including an agent delegating to a sub-agent.
-- `deploy/k8s/legatus.yaml` was validated on minikube: one server pod, a worker fleet scaled 2 to 5 with `kubectl scale`, all tasks executed remotely.
+- `deploy/k8s/playscape.yaml` was validated on minikube: one server pod, a worker fleet scaled 2 to 5 with `kubectl scale`, all tasks executed remotely.
 
 ## Roadmap
 

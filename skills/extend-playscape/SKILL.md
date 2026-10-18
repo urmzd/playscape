@@ -1,11 +1,11 @@
 ---
-name: extend-legatus
-description: Extend the legatus control plane with new tools, workspace backends, queue backends, or execution substrates while preserving the sandbox boundary and the package dependency DAG. Use when adding capabilities to legatus or reviewing changes to it.
+name: extend-playscape
+description: Extend the playscape control plane with new tools, workspace backends, queue backends, or execution substrates while preserving the sandbox boundary and the package dependency DAG. Use when adding capabilities to playscape or reviewing changes to it.
 ---
 
-# Extend legatus
+# Extend playscape
 
-legatus composes small interfaces: `workspace.Workspace` (shared storage), `sandbox.Policy` (default-deny confinement), `tool.Tool` (capability), `queue.Queue`/`queue.Results` (producer/consumer seam), `node.Factory` (execution substrate), `metrics.Recorder` (observability), `controlplane.ControlPlane` (composition root). Extend by implementing an interface, never by widening one.
+playscape composes small interfaces: `workspace.Workspace` (shared storage), `sandbox.Policy` (default-deny confinement), `tool.Tool` (capability), `queue.Queue`/`queue.Results` (producer/consumer seam), `node.Factory` (execution substrate), `metrics.Recorder` (observability), `controlplane.ControlPlane` (composition root). Extend by implementing an interface, never by widening one.
 
 ## Add a tool
 

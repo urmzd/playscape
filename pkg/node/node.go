@@ -8,8 +8,8 @@ package node
 import (
 	"context"
 
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
 )
 
 // Health is a node's reported condition.

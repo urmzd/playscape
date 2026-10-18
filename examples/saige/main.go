@@ -1,6 +1,6 @@
-// Saige integration example: run saige agents as legatus workloads.
+// Saige integration example: run saige agents as playscape workloads.
 //
-// Each legatus task runs a saige agent inside a sandboxed tool. The agent's
+// Each playscape task runs a saige agent inside a sandboxed tool. The agent's
 // answer is written to the tool's workspace area ("agents/..."); a write
 // outside that area is blocked by the sandbox. The deployment scales to
 // three competing consumer nodes, and the agent is self-referential: when
@@ -29,18 +29,18 @@ import (
 	"github.com/urmzd/saige/agent/agenttest"
 	"github.com/urmzd/saige/agent/types"
 
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node/inproc"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
-	"github.com/urmzd/legatus/pkg/tool"
-	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node/inproc"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
+	"github.com/urmzd/playscape/pkg/tool"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 const delegatePrefix = "delegate:"
 
-// agentTool wraps a saige agent as a legatus tool. Each call constructs a
+// agentTool wraps a saige agent as a playscape tool. Each call constructs a
 // fresh agent (its own conversation tree), invokes it with the task input,
 // and persists the answer to the tool's sandboxed workspace area. Inputs
 // beginning with "delegate:" make the agent spawn a sub-task for the rest —
@@ -62,7 +62,7 @@ func agentTool() tool.Tool {
 		}
 		ag, err := saige.New(saige.Config{
 			Name:         "worker",
-			SystemPrompt: "You are a legatus worker agent.",
+			SystemPrompt: "You are a playscape worker agent.",
 			Provider:     provider,
 		})
 
@@ -92,7 +92,7 @@ func agentTool() tool.Tool {
 func main() {
 	ctx := context.Background()
 
-	dir, err := os.MkdirTemp("", "legatus-saige-*")
+	dir, err := os.MkdirTemp("", "playscape-saige-*")
 	if err != nil {
 		log.Fatal(err)
 	}

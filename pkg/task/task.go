@@ -1,4 +1,4 @@
-// Package task defines the unit of work that flows through legatus:
+// Package task defines the unit of work that flows through playscape:
 // produced by API clients or by agents spawning sub-tasks, carried by a
 // queue, and consumed by agent execution nodes. It is a leaf package —
 // every other layer speaks these types without depending on one another.

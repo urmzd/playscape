@@ -16,20 +16,20 @@ import (
 	"os"
 	"sort"
 
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node/inproc"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
-	"github.com/urmzd/legatus/pkg/tool"
-	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node/inproc"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
+	"github.com/urmzd/playscape/pkg/tool"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// Shared workspace: every node reads and writes the same backend.
-	dir, err := os.MkdirTemp("", "legatus-example-*")
+	dir, err := os.MkdirTemp("", "playscape-example-*")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-// Package controlplane defines the deployment surface of legatus: deploy a
+// Package controlplane defines the deployment surface of playscape: deploy a
 // single service, scale its agent execution nodes, produce tasks for them,
 // and observe the result. It is the composition root — the only package that
 // knows about queues, nodes, sandbox policies, and metrics together; each of
@@ -7,7 +7,7 @@
 // Execution is producer/consumer: Submit and SubmitAsync enqueue tasks, and
 // competing consumers dequeue them. Scale adjusts the local consumers;
 // remote consumers (Kubernetes pods, serverless containers running
-// `legatus work`) attach to the same deployment through the Consumer
+// `playscape work`) attach to the same deployment through the Consumer
 // interface and scale independently under their own orchestrator.
 package controlplane
 
@@ -15,9 +15,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/urmzd/legatus/pkg/ngac"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
+	"github.com/urmzd/playscape/pkg/ngac"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
 )
 
 // ErrNotFound is returned when a deployment name is unknown.

@@ -6,12 +6,12 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node"
-	"github.com/urmzd/legatus/pkg/queue"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
-	"github.com/urmzd/legatus/pkg/worker"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node"
+	"github.com/urmzd/playscape/pkg/queue"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
+	"github.com/urmzd/playscape/pkg/worker"
 )
 
 // Memory is an in-process ControlPlane and Consumer host. Deployment state,
@@ -148,7 +148,7 @@ func (m *Memory) resize(ctx context.Context, d *deployment, want int) error {
 		}
 		d.workers = d.workers[:len(d.workers)-1]
 	}
-	m.rec.Gauge("legatus_nodes", float64(len(d.workers)),
+	m.rec.Gauge("playscape_nodes", float64(len(d.workers)),
 		metrics.Label{Key: "deployment", Value: name})
 	return nil
 }
@@ -170,7 +170,7 @@ func (m *Memory) SubmitAsync(ctx context.Context, name string, t task.Task) (str
 	if err := d.queue.Enqueue(ctx, t); err != nil {
 		return "", fmt.Errorf("controlplane: submit to %q: %w", name, err)
 	}
-	m.rec.Count("legatus_tasks_submitted_total", 1,
+	m.rec.Count("playscape_tasks_submitted_total", 1,
 		metrics.Label{Key: "deployment", Value: name},
 		metrics.Label{Key: "tool", Value: t.Tool})
 	return t.ID, nil
@@ -245,7 +245,7 @@ func (m *Memory) Report(ctx context.Context, name string, r task.Result) error {
 	if r.Error != "" {
 		status = "error"
 	}
-	m.rec.Count("legatus_tasks_total", 1,
+	m.rec.Count("playscape_tasks_total", 1,
 		metrics.Label{Key: "deployment", Value: name},
 		metrics.Label{Key: "source", Value: "remote"},
 		metrics.Label{Key: "status", Value: status})

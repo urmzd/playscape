@@ -3,7 +3,7 @@ package ngac_test
 import (
 	"testing"
 
-	"github.com/urmzd/legatus/pkg/ngac"
+	"github.com/urmzd/playscape/pkg/ngac"
 )
 
 // buildSpec compiles a spec or fails the test.

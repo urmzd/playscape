@@ -12,12 +12,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/urmzd/legatus/internal/server"
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node/inproc"
-	"github.com/urmzd/legatus/pkg/tool"
-	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/playscape/internal/server"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node/inproc"
+	"github.com/urmzd/playscape/pkg/tool"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 func newServeCmd() *cobra.Command {
@@ -29,7 +29,7 @@ func newServeCmd() *cobra.Command {
 		Use:   "serve",
 		Short: "Run the control plane server",
 		Long: "Run the beta control plane: an HTTP API producing tasks onto per-deployment\n" +
-			"queues, consumed by local worker goroutines and by remote `legatus work`\n" +
+			"queues, consumed by local worker goroutines and by remote `playscape work`\n" +
 			"replicas (Kubernetes pods, serverless containers). A built-in \"echo\" tool is\n" +
 			"registered (sandboxed to the \"echo/\" area) so the API is exercisable out of\n" +
 			"the box; real deployments register their own tools via the Go SDK.",
@@ -58,7 +58,7 @@ func newServeCmd() *cobra.Command {
 
 			errc := make(chan error, 1)
 			go func() { errc <- srv.ListenAndServe() }()
-			fmt.Fprintf(os.Stderr, "legatus (beta) listening on %s, workspace at %s\n", addr, root)
+			fmt.Fprintf(os.Stderr, "playscape (beta) listening on %s, workspace at %s\n", addr, root)
 
 			select {
 			case err := <-errc:
@@ -71,7 +71,7 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", ":8484", "Listen address")
-	cmd.Flags().StringVar(&root, "workspace", ".legatus/workspace", "Workspace root directory")
+	cmd.Flags().StringVar(&root, "workspace", ".playscape/workspace", "Workspace root directory")
 	return cmd
 }
 
