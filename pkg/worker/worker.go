@@ -1,6 +1,6 @@
-// Package worker runs the consumer side of legatus: a loop that leases
+// Package worker runs the consumer side of playscape: a loop that leases
 // tasks from a queue, executes them on a node, and reports results. The
-// control plane runs workers as goroutines for local scaling; `legatus
+// control plane runs workers as goroutines for local scaling; `playscape
 // work` runs the same loop in its own process, which is what Kubernetes
 // deployments and serverless containers replicate to scale out.
 package worker
@@ -10,10 +10,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node"
-	"github.com/urmzd/legatus/pkg/queue"
-	"github.com/urmzd/legatus/pkg/task"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node"
+	"github.com/urmzd/playscape/pkg/queue"
+	"github.com/urmzd/playscape/pkg/task"
 )
 
 // Worker consumes tasks for one deployment on one node.
@@ -67,16 +67,16 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		start := time.Now()
 		res, err := w.Node.Run(ctx, t)
-		rec.Observe("legatus_task_seconds", time.Since(start).Seconds(), labels...)
+		rec.Observe("playscape_task_seconds", time.Since(start).Seconds(), labels...)
 		status := "ok"
 		if err != nil {
 			status = "error"
 			res = task.Result{TaskID: t.ID, NodeID: w.Node.ID(), Error: err.Error()}
 		}
-		rec.Count("legatus_tasks_total", 1, append(labels, metrics.Label{Key: "status", Value: status})...)
+		rec.Count("playscape_tasks_total", 1, append(labels, metrics.Label{Key: "status", Value: status})...)
 
 		if err := w.Results.Report(ctx, res); err != nil && !errors.Is(err, context.Canceled) {
-			rec.Count("legatus_result_report_failures_total", 1, labels...)
+			rec.Count("playscape_result_report_failures_total", 1, labels...)
 		}
 	}
 }

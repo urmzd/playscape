@@ -6,17 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/legatus/internal/server"
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node"
-	"github.com/urmzd/legatus/pkg/node/inproc"
-	"github.com/urmzd/legatus/pkg/queue/httpqueue"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
-	"github.com/urmzd/legatus/pkg/tool"
-	"github.com/urmzd/legatus/pkg/worker"
-	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/playscape/internal/server"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node"
+	"github.com/urmzd/playscape/pkg/node/inproc"
+	"github.com/urmzd/playscape/pkg/queue/httpqueue"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
+	"github.com/urmzd/playscape/pkg/tool"
+	"github.com/urmzd/playscape/pkg/worker"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 // TestRemoteConsumerRoundTrip exercises the full producer/consumer path a
@@ -54,7 +54,7 @@ func TestRemoteConsumerRoundTrip(t *testing.T) {
 	}
 
 	// Remote worker: its own workspace dir and registry, attached over HTTP —
-	// exactly what `legatus work` builds.
+	// exactly what `playscape work` builds.
 	client := httpqueue.New(srv.URL, "svc")
 	client.LeaseWait = time.Second
 	spec, err := client.Spec(ctx)
@@ -100,7 +100,7 @@ func TestRemoteConsumerRoundTrip(t *testing.T) {
 		t.Fatalf("output = %q, want remote execution", res.Output)
 	}
 
-	key := `legatus_tasks_total{deployment="svc",source="remote",status="ok"}`
+	key := `playscape_tasks_total{deployment="svc",source="remote",status="ok"}`
 	if got := rec.Snapshot()[key]; got != 1 {
 		t.Fatalf("%s = %v, want 1", key, got)
 	}

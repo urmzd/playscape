@@ -1,10 +1,10 @@
-# legatus
+# playscape
 
-Beta control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace. Go module `github.com/urmzd/legatus`, binary `legatus`.
+Beta control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace. Go module `github.com/urmzd/playscape`, binary `playscape`.
 
 ## Architecture
 
-Producer/consumer over per-deployment queues. Producers (HTTP API, tools spawning sub-tasks) enqueue; competing consumers (local goroutines via `Scale`, remote `legatus work` processes leasing over HTTP) execute. Packages form a strict one-way DAG:
+Producer/consumer over per-deployment queues. Producers (HTTP API, tools spawning sub-tasks) enqueue; competing consumers (local goroutines via `Scale`, remote `playscape work` processes leasing over HTTP) execute. Packages form a strict one-way DAG:
 
 - `pkg/task`, `pkg/workspace`, `pkg/metrics`, `pkg/ngac` are leaves (stdlib only)
 - `pkg/ngac` is the NGAC policy machine where access is defined (users/attributes/associations/prohibitions); `pkg/sandbox` is the enforcement point decorating `workspace`, with flat `Policy` compiling into the same graph via `FromPolicies`
@@ -26,9 +26,9 @@ Full guide: `docs/architecture/overview.md`. Discover layout with `tree` or ripg
 | lint | `golangci-lint run` |
 | fmt | `gofmt -w .` |
 | quality gate | `make check` |
-| run server | `make run` (or `go run ./cmd/legatus serve`) |
+| run server | `make run` (or `go run ./cmd/playscape serve`) |
 | examples | `go run ./examples/basic/`; `cd examples/saige && go run .` |
-| k8s validation | `deploy/k8s/legatus.yaml` on minikube (see README) |
+| k8s validation | `deploy/k8s/playscape.yaml` on minikube (see README) |
 
 ## Code Style
 

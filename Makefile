@@ -1,6 +1,6 @@
 .PHONY: all init build test lint fmt check run install record
 
-MOD := legatus
+MOD := playscape
 CMD := cmd/$(MOD)
 
 all: check

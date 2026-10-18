@@ -7,7 +7,7 @@ streaming, and the reduced API grammar. The current beta implements a subset
 
 ## System Abstraction
 
-legatus is **two primitives around one policy machine on one workspace**:
+playscape is **two primitives around one policy machine on one workspace**:
 
 - a **task queue** — competitive: exactly one consumer wins each item
 - a **frame stream** — broadcast: every observer sees every item
@@ -81,7 +81,7 @@ control plane          manages the fleet: every deployment it hosts
    idempotency, and budgets.
 3. **Observation never gates execution.** `Emit` never blocks or fails a task;
    a slow or absent watcher drops frames (bounded buffer, drop-oldest,
-   `legatus_events_dropped_total`).
+   `playscape_events_dropped_total`).
 4. **Terminal retention.** Exactly one frame per task is durable: the terminal
    one. Intermediate frames are best-effort. This single rule makes `watch`
    total and `Await` correct; durable brokers extend retention backward
@@ -172,7 +172,7 @@ type Queue interface {
 
 Lifecycle: **claim → heartbeat\* → exactly one of {settle, release, expire}.**
 Settlement is not an endpoint and not a worker verb: **the terminal frame is
-the ack.** When the bus accepts a `legatus.result`/`legatus.error` frame
+the ack.** When the bus accepts a `playscape.result`/`playscape.error` frame
 from the current attempt, the control plane settles the task and retains the
 frame in one step — there is no dual write between "report the result" and
 "ack the task" for a worker crash to fall between.
@@ -220,8 +220,8 @@ A new leaf package, stdlib-only:
 type Event struct {
     Task    string // global task ID
     Seq     uint64 // per-task ordering; assigned by the bus on acceptance
-    Type    string // adapter-namespaced ("saige.delta"); "legatus.*" reserved
-    Payload []byte // opaque to legatus, always
+    Type    string // adapter-namespaced ("saige.delta"); "playscape.*" reserved
+    Payload []byte // opaque to playscape, always
 }
 
 // Sink is the execution-side door in.
@@ -245,17 +245,17 @@ type Bus interface {
 
 ### Frame grammar
 
-The `legatus.*` type namespace is reserved for the envelope's own frames;
+The `playscape.*` type namespace is reserved for the envelope's own frames;
 adapters own everything else.
 
 | Type | Terminal | Meaning |
 |------|----------|---------|
-| `legatus.result` | yes | task succeeded; payload is the `Result` |
-| `legatus.error` | yes | task failed; payload is the `Result` |
-| `legatus.handoff` | no (chain hop) | control transferred; `ContinuedBy` names the continuation |
+| `playscape.result` | yes | task succeeded; payload is the `Result` |
+| `playscape.error` | yes | task failed; payload is the `Result` |
+| `playscape.handoff` | no (chain hop) | control transferred; `ContinuedBy` names the continuation |
 | anything else | no | adapter-defined; payload opaque |
 
-Exactly one terminal frame ends each chain link; a `legatus.handoff` frame
+Exactly one terminal frame ends each chain link; a `playscape.handoff` frame
 links to the continuation, and chain-following lives in the control plane's
 `Watch` (the bus does not know about lineage).
 
@@ -330,9 +330,9 @@ type Environment struct {
   to the environment — a deployment has no replica count of its own.
 - `node.Factory` does not change shape; an environment is which factory
   builds its nodes plus which queue its tasks route to.
-- `legatus work --deployment X --environment gpu` attaches a remote worker;
+- `playscape work --deployment X --environment gpu` attaches a remote worker;
   on Kubernetes, one worker Deployment (and HPA on
-  `legatus_queue_depth{deployment,environment}`) per environment.
+  `playscape_queue_depth{deployment,environment}`) per environment.
 - Environments are **orthogonal to NGAC**: policy answers *who may invoke a
   tool*; environment answers *where it runs*. Environments never appear in
   the policy graph.
@@ -364,23 +364,23 @@ exactly three one-way channels:
 1. **Work** — tasks appearing on the queue (data)
 2. **Signal** — capacity metrics that a scaler acts on (control, indirect)
 3. **Lifecycle** — context cancellation or SIGTERM from whatever owns the
-   process (never a legatus RPC)
+   process (never a playscape RPC)
 
 Shutdown protocol: stop claiming, finish or release the current task, exit.
 
 ## The Scaling Plane Is a Signal, Not a Component
 
-There is a scaling plane, but legatus does not own it as code — its
-interface is a metric, not a Go type. `legatus_queue_depth
+There is a scaling plane, but playscape does not own it as code — its
+interface is a metric, not a Go type. `playscape_queue_depth
 {deployment,environment}` (with task latency alongside) is the contract;
 anything that reconciles capacity against it is a scaler:
 
 - locally, the `Scale(n)` goroutine pool inside the control plane
-- remotely, a Kubernetes HPA replicating `legatus work` pods per environment
+- remotely, a Kubernetes HPA replicating `playscape work` pods per environment
 - anywhere else, any loop that starts and stops worker processes
 
-A `Scaler` interface in legatus would re-implement HPA and pull worker
-lifecycle into the control plane — over-abstraction, refused. legatus's
+A `Scaler` interface in playscape would re-implement HPA and pull worker
+lifecycle into the control plane — over-abstraction, refused. playscape's
 obligations end at two things: publish the signal, and tolerate workers
 appearing or vanishing at any moment (which claim, heartbeat, and expiry
 already guarantee). Control flows down as desired state and data; status
@@ -436,7 +436,7 @@ retried or repaired, never lost and never double-truthed:
   index) → (2) `queue.Enqueue` → (3) `2xx`. Crash after (1): client never
   got the ack; a janitor re-enqueues `accepted` rows never claimed past a
   TTL — idempotent because the task ID is already fixed.
-- **Terminal accept** (emit carrying `legatus.result|error`): (1)
+- **Terminal accept** (emit carrying `playscape.result|error`): (1)
   `ledger.Complete` CAS — wrong attempt or already terminal → `410` →
   (2) publish terminal frame on the bus → (3) `queue.Settle`. If (2) is
   lost, watchers reconcile against the ledger on reconnect; if (3) is lost,
@@ -456,7 +456,7 @@ retried or repaired, never lost and never double-truthed:
 
 ### Scaling the control plane itself
 
-With all state behind the three interfaces, `legatus serve` replicas are
+With all state behind the three interfaces, `playscape serve` replicas are
 interchangeable: any replica serves any `dispatch`, `watch`, or operator
 call; the janitor and reaper run on every replica (safe — every action is a
 fenced CAS). Requirements this places on backends: the queue needs
@@ -516,7 +516,7 @@ the backend:
   process, so the server must double as its own message broker. The `Memory`
   backends' remote transport is a small HTTP surface under `/internal/*`
   (`POST /internal/claim`, `POST /internal/tasks/{id}/heartbeat|release|emit`)
-  spoken only by `legatus work`. It is unversioned, worker-credentialed when
+  spoken only by `playscape work`. It is unversioned, worker-credentialed when
   auth lands, firewallable or bound to a separate listener, and free to
   change every release — server and worker ship in one binary.
 - **Broker backend (Redis, SQS, Pub/Sub):** workers' `queue.Queue`
@@ -569,7 +569,7 @@ Wire").
 
 ## Adapter Contract
 
-There is deliberately **no `Agent` interface in legatus** and no framework
+There is deliberately **no `Agent` interface in playscape** and no framework
 named in the root module. Any agent framework integrates by meeting three
 obligations:
 
@@ -585,15 +585,15 @@ dependencies out of the root module) is the reference implementation, and it
 is bidirectional:
 
 ```go
-// legatus runs saige — agent as workload:
+// playscape runs saige — agent as workload:
 // pipes stream.Deltas() → rt.Events().Emit("saige.delta", json(delta)).
 func Tool(name string, cfg saige.AgentConfig) tool.Tool
 
-// saige calls legatus — delegation as LLM-facing saige tools:
+// saige calls playscape — delegation as LLM-facing saige tools:
 func DelegateTool(rt tool.Runtime) /* saige tool */ // Spawn + Await
 func HandoffTool(rt tool.Runtime)  /* saige tool */ // tail call
 
-// client consumes legatus as saige — location-transparent streaming:
+// client consumes playscape as saige — location-transparent streaming:
 func Deltas(s event.Stream) (<-chan types.Delta, func() error)
 ```
 

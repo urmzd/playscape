@@ -3,7 +3,7 @@ bin/
 build/
 
 # Runtime state
-.legatus/
+.playscape/
 
 # Git worktrees
 .worktrees/

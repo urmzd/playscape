@@ -1,8 +1,8 @@
-# legatus
+# playscape
 
-> Beta control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace. Execution is producer/consumer over per-deployment queues, so capacity scales by adding consumers (local goroutines, Kubernetes pods, or serverless containers running `legatus work`). Access is defined in an NGAC policy machine (NIST-style users, attributes, associations, prohibitions; flat per-tool policies compile into the same graph) and enforced by the sandbox with default deny, and agents can spawn sub-agents through policy-gated self-reference.
+> Beta control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace. Execution is producer/consumer over per-deployment queues, so capacity scales by adding consumers (local goroutines, Kubernetes pods, or serverless containers running `playscape work`). Access is defined in an NGAC policy machine (NIST-style users, attributes, associations, prohibitions; flat per-tool policies compile into the same graph) and enforced by the sandbox with default deny, and agents can spawn sub-agents through policy-gated self-reference.
 
-Go module `github.com/urmzd/legatus`; binary `legatus` with `serve` (control plane API) and `work` (remote consumer) commands.
+Go module `github.com/urmzd/playscape`; binary `playscape` with `serve` (control plane API) and `work` (remote consumer) commands.
 
 ## Documentation
 
@@ -19,6 +19,6 @@ Go module `github.com/urmzd/legatus`; binary `legatus` with `serve` (control pla
 
 ## Optional
 
-- [Kubernetes manifests](deploy/k8s/legatus.yaml): server + scalable worker fleet, validated on minikube
+- [Kubernetes manifests](deploy/k8s/playscape.yaml): server + scalable worker fleet, validated on minikube
 - [Security policy](SECURITY.md): the sandbox is a security boundary
 - [Skills](skills/): portable agent skills for working in this repo

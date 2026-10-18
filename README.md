@@ -1,32 +1,32 @@
 <p align="center">
-  <h1 align="center">legatus</h1>
+  <h1 align="center">playscape</h1>
   <p align="center">
     Control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace.
     <br /><br />
-    <a href="https://github.com/urmzd/legatus/releases">Download</a>
+    <a href="https://github.com/urmzd/playscape/releases">Download</a>
     &middot;
-    <a href="https://github.com/urmzd/legatus/issues">Report Bug</a>
+    <a href="https://github.com/urmzd/playscape/issues">Report Bug</a>
     &middot;
-    <a href="https://pkg.go.dev/github.com/urmzd/legatus">Go Docs</a>
+    <a href="https://pkg.go.dev/github.com/urmzd/playscape">Go Docs</a>
   </p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/urmzd/legatus/actions/workflows/ci.yml"><img src="https://github.com/urmzd/legatus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/urmzd/playscape/actions/workflows/ci.yml"><img src="https://github.com/urmzd/playscape/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   &nbsp;
-  <a href="https://pkg.go.dev/github.com/urmzd/legatus"><img src="https://pkg.go.dev/badge/github.com/urmzd/legatus.svg" alt="Go Reference"></a>
+  <a href="https://pkg.go.dev/github.com/urmzd/playscape"><img src="https://pkg.go.dev/badge/github.com/urmzd/playscape.svg" alt="Go Reference"></a>
   &nbsp;
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/urmzd/legatus" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/urmzd/playscape" alt="License"></a>
 </p>
 
 > Formerly `dispatch`.
 
-> **Beta.** legatus is pre-1.0 and under active development. Interfaces are stabilizing but may change between minor versions; queues are in-memory (at-most-once delivery) and the shared workspace backend is a local directory. Durable brokers and GCS/S3 workspace backends are on the roadmap.
+> **Beta.** playscape is pre-1.0 and under active development. Interfaces are stabilizing but may change between minor versions; queues are in-memory (at-most-once delivery) and the shared workspace backend is a local directory. Durable brokers and GCS/S3 workspace backends are on the roadmap.
 
 ## Features
 
 - **Deploy a single service** and scale its agent execution nodes without changing it
-- **Producer/consumer execution**: tasks flow through a queue; scaling out is adding consumers, locally as goroutines or remotely as Kubernetes pods and serverless containers running `legatus work`
+- **Producer/consumer execution**: tasks flow through a queue; scaling out is adding consumers, locally as goroutines or remotely as Kubernetes pods and serverless containers running `playscape work`
 - **Sandboxed tools**: every tool is locked to declared workspace areas and spawn targets; anything not granted is denied, so a compromised tool cannot leak outside its area
 - **NGAC access control**: access is defined in a NIST-style policy machine (users, attributes, associations, prohibitions) and enforced by the sandbox; flat per-tool policies compile into the same graph, full `access` specs express group grants and overriding denials
 - **Shared workspace**: all nodes read and write one storage backend, so state lives in exactly one place
@@ -39,17 +39,17 @@
 ### Script (macOS / Linux)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/urmzd/legatus/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/urmzd/playscape/main/install.sh | sh
 ```
 
 ### Manual
 
-Download a pre-built binary from the [releases page](https://github.com/urmzd/legatus/releases/latest).
+Download a pre-built binary from the [releases page](https://github.com/urmzd/playscape/releases/latest).
 
 ### Go SDK
 
 ```sh
-go get github.com/urmzd/legatus
+go get github.com/urmzd/playscape
 ```
 
 ## Quick Start
@@ -57,7 +57,7 @@ go get github.com/urmzd/legatus
 Run the control plane and exercise it with the built-in sandboxed `echo` tool:
 
 ```sh
-legatus serve &
+playscape serve &
 
 curl -X POST localhost:8484/v1/deployments \
   -d '{"name":"echo-service","replicas":3,"policies":[{"tool":"echo","areas":[{"prefix":"echo"}]}]}'
@@ -92,20 +92,20 @@ import (
 	"os"
 	"sort"
 
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/metrics"
-	"github.com/urmzd/legatus/pkg/node/inproc"
-	"github.com/urmzd/legatus/pkg/sandbox"
-	"github.com/urmzd/legatus/pkg/task"
-	"github.com/urmzd/legatus/pkg/tool"
-	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/metrics"
+	"github.com/urmzd/playscape/pkg/node/inproc"
+	"github.com/urmzd/playscape/pkg/sandbox"
+	"github.com/urmzd/playscape/pkg/task"
+	"github.com/urmzd/playscape/pkg/tool"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// Shared workspace: every node reads and writes the same backend.
-	dir, err := os.MkdirTemp("", "legatus-example-*")
+	dir, err := os.MkdirTemp("", "playscape-example-*")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -176,14 +176,14 @@ See [`examples/`](examples/) for more.
 
 ## Scaling on Kubernetes
 
-Execution scales by replicating consumers, not by touching the control plane. The reference manifests deploy one `legatus serve` service and a fleet of `legatus work` pods that lease tasks from it over HTTP:
+Execution scales by replicating consumers, not by touching the control plane. The reference manifests deploy one `playscape serve` service and a fleet of `playscape work` pods that lease tasks from it over HTTP:
 
 ```sh
 minikube start
-eval $(minikube docker-env) && docker build -t legatus:dev .
-kubectl apply -f deploy/k8s/legatus.yaml
+eval $(minikube docker-env) && docker build -t playscape:dev .
+kubectl apply -f deploy/k8s/playscape.yaml
 
-kubectl scale deployment/legatus-worker --replicas=10
+kubectl scale deployment/playscape-worker --replicas=10
 ```
 
 Deploy a service with `"replicas": -1` (no local nodes) and every task is executed by the worker fleet. An HPA on queue or task metrics gives the same effect for serverless-style autoscaling.

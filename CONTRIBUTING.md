@@ -11,8 +11,8 @@
 ## Getting Started
 
 ```sh
-git clone https://github.com/urmzd/legatus
-cd legatus
+git clone https://github.com/urmzd/playscape
+cd playscape
 make init
 ```
 

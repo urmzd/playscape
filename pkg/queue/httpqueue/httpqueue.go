@@ -1,6 +1,6 @@
 // Package httpqueue implements queue.Queue and queue.Results over the
-// legatus control plane's HTTP API. It is what remote consumers — the
-// `legatus work` process that Kubernetes pods and serverless containers
+// playscape control plane's HTTP API. It is what remote consumers — the
+// `playscape work` process that Kubernetes pods and serverless containers
 // replicate — use to compete for tasks on a deployment's queue, and what
 // their tools spawn sub-tasks through. No broker is required: the control
 // plane service is the rendezvous point.
@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/urmzd/legatus/pkg/controlplane"
-	"github.com/urmzd/legatus/pkg/task"
+	"github.com/urmzd/playscape/pkg/controlplane"
+	"github.com/urmzd/playscape/pkg/task"
 )
 
 // Client speaks to one deployment on one control plane server.
@@ -32,7 +32,7 @@ type Client struct {
 }
 
 // New returns a client for deployment on the control plane at baseURL
-// (e.g. "http://legatus:8484").
+// (e.g. "http://playscape:8484").
 func New(baseURL, deployment string) *Client {
 	return &Client{
 		base:       strings.TrimRight(baseURL, "/"),

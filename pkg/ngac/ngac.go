@@ -4,7 +4,7 @@
 // connected by assignments and granted capabilities through associations,
 // with prohibitions as overriding denials.
 //
-// In legatus, NGAC is where access is *defined*: which agents (users) may
+// In playscape, NGAC is where access is *defined*: which agents (users) may
 // exercise which operations over which workspace areas and spawn targets
 // (objects). The sandbox package is where those decisions are *enforced* —
 // it consults a Graph on every workspace operation and spawn attempt. The
@@ -93,7 +93,7 @@ func (g *Graph) AddPolicyClass(name string) error { return g.add(name, PolicyCla
 // AddUserAttribute adds a user attribute node.
 func (g *Graph) AddUserAttribute(name string) error { return g.add(name, UserAttribute) }
 
-// AddUser adds a user node. In legatus a user is an agent or tool name.
+// AddUser adds a user node. In playscape a user is an agent or tool name.
 func (g *Graph) AddUser(name string) error { return g.add(name, User) }
 
 // AddObjectAttribute adds an object attribute node. A non-empty prefix makes

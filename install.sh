@@ -1,20 +1,20 @@
 #!/bin/sh
-# install.sh — Installs legatus from GitHub releases.
+# install.sh — Installs playscape from GitHub releases.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/urmzd/legatus/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/urmzd/playscape/main/install.sh | sh
 #
 # Environment variables:
-#   LEGATUS_VERSION     — version to install (default: latest)
-#   LEGATUS_INSTALL_DIR — installation directory (default: $HOME/.local/bin)
-#   LEGATUS_SHA256      — optional SHA256 checksum to verify against
+#   PLAYSCAPE_VERSION     — version to install (default: latest)
+#   PLAYSCAPE_INSTALL_DIR — installation directory (default: $HOME/.local/bin)
+#   PLAYSCAPE_SHA256      — optional SHA256 checksum to verify against
 
 set -eu
 
-REPO="urmzd/legatus"
-BINARY="legatus"
-VERSION="${LEGATUS_VERSION:-latest}"
-INSTALL_DIR="${LEGATUS_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="urmzd/playscape"
+BINARY="playscape"
+VERSION="${PLAYSCAPE_VERSION:-latest}"
+INSTALL_DIR="${PLAYSCAPE_INSTALL_DIR:-$HOME/.local/bin}"
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
@@ -51,8 +51,8 @@ trap 'rm -rf "$tmp"' EXIT
 echo "downloading $url" >&2
 curl -fsSL "$url" -o "$tmp/$BINARY"
 
-if [ -n "${LEGATUS_SHA256:-}" ]; then
-  echo "${LEGATUS_SHA256}  $tmp/$BINARY" | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -) >&2
+if [ -n "${PLAYSCAPE_SHA256:-}" ]; then
+  echo "${PLAYSCAPE_SHA256}  $tmp/$BINARY" | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -) >&2
 fi
 
 chmod +x "$tmp/$BINARY"
