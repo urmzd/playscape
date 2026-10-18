@@ -74,9 +74,9 @@ Or compose the same thing in Go:
 
 <!-- fsrc src="examples/basic/main.go" fence="auto" -->
 ```go
-// Basic example: compose a control plane from the orthogonal pieces —
-// a local workspace, a sandboxed tool, an in-process node factory, and an
-// in-memory metrics recorder — then deploy a service, scale it out, submit
+// Basic example: compose a control plane from the orthogonal pieces
+// (a local workspace, a sandboxed tool, an in-process node factory, and an
+// in-memory metrics recorder), then deploy a service, scale it out, submit
 // tasks, and print the resulting metrics.
 //
 // Prerequisites: none. Run with:
