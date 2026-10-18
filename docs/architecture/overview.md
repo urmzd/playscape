@@ -20,6 +20,8 @@ ngac        (leaf: NGAC policy machine — Graph, Spec, decisions)
 sandbox     -> ngac, workspace    (enforcement point: ScopePDP, Policy sugar)
 tool        -> task, workspace    (Tool, Runtime, Registry, Provider)
 tool/cli    -> tool               ("cli" provider: argv-templated binaries)
+runner      -> tool, task         (Executor, Local, Shell tool adapter)
+runner/k8s  -> runner, client-go  (one batch/v1 Job per run)
 queue       -> task               (Queue, Results; Memory, httpqueue)
 node        -> task, sandbox      (Node, Spec, Factory, Spawner)
 node/inproc -> node, tool, ...    (in-process execution substrate)
@@ -73,6 +75,14 @@ Enforcement: nodes never hand tools the raw workspace. `sandbox.ScopePDP` wraps 
 A `tool.Provider` builds a family of tools by one mechanism, labelled by a `tool.Kind`; `Registry.RegisterProvider` registers all of a provider's tools or none. The beta ships the `cli` kind (`pkg/tool/cli`): each tool wraps one binary behind a fixed argv template whose `{name}` placeholders are filled from the task's JSON input, one argument per element, never shell-expanded. Values starting with `-` are rejected unless the spec opts in, the child environment is an explicit allowlist, and every call has a timeout and per-stream output caps. A completed run returns `{exit_code, stdout, stderr}` whatever the exit code, so the agent can react to failures.
 
 Caveat: the `cli` provider is not an isolation boundary. The binary runs on the worker host with the worker's privileges, and the workspace policy does not confine what it touches on disk. Grant `cli` tools only binaries you would run on the worker yourself.
+
+## Sandboxed Runs
+
+`pkg/runner` is process isolation, distinct from `pkg/sandbox` (the NGAC enforcement point over the workspace). A `runner.Executor` runs one command to completion, streams its combined output, and returns its exit code; `runner.Shell` adapts an executor into a tool taking `{"script": ...}`. `runner.Local` runs host processes and is for development and tests only.
+
+`pkg/runner/k8s` creates one batch/v1 Job per run: `backoffLimit: 0`, `restartPolicy: Never`, `activeDeadlineSeconds` from the run timeout, `ttlSecondsAfterFinished` for cleanup, no service-account token or service links, non-root UID with RuntimeDefault seccomp, no privilege escalation, all capabilities dropped, read-only root filesystem with size-limited `emptyDir` scratch at `/work` and `/tmp`, and requests equal to limits for CPU, memory, and ephemeral storage. Logs are followed from the pod; the exit code comes from the terminated container. Cancelled or failed-to-start runs delete their Job immediately. The embedding process needs `deploy/k8s/runner-rbac.yaml`; `runner-networkpolicy.yaml` optionally denies all traffic to runs labelled `playscape/network: isolated`.
+
+Caveats: runs see no shared workspace (scratch only), stdout and stderr arrive interleaved as one stream, and status is polled rather than watched.
 
 ## Self-Referential Agents
 

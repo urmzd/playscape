@@ -1,0 +1,16 @@
+# Optional: deny all ingress and egress (including DNS) for run pods the
+# executor labels `playscape/network: isolated` (k8s.Config.NetworkIsolated).
+# Requires a CNI that enforces NetworkPolicy; without one this is a no-op.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: playscape-run-isolated
+  labels:
+    app.kubernetes.io/name: playscape
+    app.kubernetes.io/component: runner
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: playscape
+      playscape/network: isolated
+  policyTypes: ["Ingress", "Egress"]
