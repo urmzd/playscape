@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,7 +246,9 @@ func decode(input []byte) (map[string]string, error) {
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("%w: want a JSON object: %w", ErrInvalidInput, err)
 	}
-	if dec.More() {
+	// Nothing may follow the object, not even a stray delimiter, which
+	// More does not report.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: want one JSON object, got more input after it", ErrInvalidInput)
 	}
 	for k, v := range raw {

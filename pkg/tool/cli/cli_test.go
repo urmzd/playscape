@@ -209,7 +209,12 @@ func TestNumbersReachTheCommandExactly(t *testing.T) {
 // unmarshalled in one call.
 func TestTrailingInputIsRefused(t *testing.T) {
 	tl := newTool(t, Spec{Name: "echo", Binary: "echo", Args: []string{"{n}"}})
-	if _, err := tl.Call(context.Background(), nil, []byte(`{"n": 1} {"n": 2}`)); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	for _, input := range []string{`{"n": 1} {"n": 2}`, `{"n": 1}]`, `{"n": 1}}`, `{"n": 1},`, `{"n": 1} x`} {
+		if _, err := tl.Call(context.Background(), nil, []byte(input)); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", input, err)
+		}
+	}
+	if _, err := call(t, tl, "{\"n\": 1} \n\t"); err != nil {
+		t.Errorf("trailing whitespace: %v, want accepted", err)
 	}
 }
