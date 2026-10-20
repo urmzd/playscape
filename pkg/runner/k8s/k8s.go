@@ -188,13 +188,72 @@ func (e *Executor) follow(ctx context.Context, job *batchv1.Job, logs io.Writer)
 		return runner.Result{}, err
 	}
 	// A deadline kill also terminates the container; report it as a
-	// timeout, not as the signal's exit code.
-	if j, err := e.client.BatchV1().Jobs(e.cfg.Namespace).Get(ctx, job.Name, metav1.GetOptions{}); err == nil {
+	// timeout, not as the signal's exit code. The kubelet can report the
+	// killed container before the Job controller records why, so a killed
+	// container is classified only once the Job carries a condition that
+	// says how it ended. Any other exit is the command's own.
+	state := terminated(pod)
+	if killed(state) {
+		c, err := e.settle(ctx, job)
+		if err != nil {
+			return runner.Result{}, err
+		}
+		if c.Type != batchv1.JobComplete && c.Reason == batchv1.JobReasonDeadlineExceeded {
+			return runner.Result{}, fmt.Errorf("%w: job %s: %s", runner.ErrTimeout, job.Name, c.Message)
+		}
+	} else if j, err := e.client.BatchV1().Jobs(e.cfg.Namespace).Get(ctx, job.Name, metav1.GetOptions{}); err == nil {
 		if c := failed(j); c != nil && c.Reason == batchv1.JobReasonDeadlineExceeded {
 			return runner.Result{}, fmt.Errorf("%w: job %s: %s", runner.ErrTimeout, job.Name, c.Message)
 		}
 	}
-	return runner.Result{ExitCode: int(terminated(pod).ExitCode)}, nil
+	return runner.Result{ExitCode: int(state.ExitCode)}, nil
+}
+
+// killed reports whether a container was ended by a signal rather than by
+// exiting: SIGKILL or SIGTERM, which is what a deadline, an OOM kill and an
+// eviction look like from the container's side.
+func killed(t *corev1.ContainerStateTerminated) bool {
+	return t.Signal != 0 || t.ExitCode == 128+9 || t.ExitCode == 128+15
+}
+
+// settle polls the Job until it carries a condition saying how it ended:
+// Complete, Failed, or the FailureTarget that comes before Failed. A Job's
+// pod with backoffLimit 0 always reaches one of them once it has terminated.
+// The wait is bounded by ctx, which Run bounds by the Job's deadline.
+func (e *Executor) settle(ctx context.Context, job *batchv1.Job) (*batchv1.JobCondition, error) {
+	jobs := e.client.BatchV1().Jobs(e.cfg.Namespace)
+	tick := time.NewTicker(e.cfg.PollInterval)
+	defer tick.Stop()
+	for {
+		j, err := jobs.Get(ctx, job.Name, metav1.GetOptions{})
+		if err != nil && ctx.Err() == nil {
+			return nil, fmt.Errorf("k8s: get job %s: %w", job.Name, err)
+		}
+		if err == nil {
+			if c := ended(j); c != nil {
+				return c, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("k8s: run %s: %w", job.Name, ctx.Err())
+		case <-tick.C:
+		}
+	}
+}
+
+// ended returns the condition saying how the Job ended, or nil while it has
+// none: a failure (see failed), or Complete.
+func ended(j *batchv1.Job) *batchv1.JobCondition {
+	if c := failed(j); c != nil {
+		return c
+	}
+	for i, c := range j.Status.Conditions {
+		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
+			return &j.Status.Conditions[i]
+		}
+	}
+	return nil
 }
 
 // waitPod polls until the Job's pod satisfies done, the Job fails, or the

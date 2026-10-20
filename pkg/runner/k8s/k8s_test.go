@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -421,5 +422,75 @@ func TestRunReportsTheExitCodeWhenTheJobFailsBetweenItsReads(t *testing.T) {
 	}
 	if res.ExitCode != 3 {
 		t.Fatalf("exit code = %d, want 3", res.ExitCode)
+	}
+}
+
+// The kubelet can report a container the deadline killed before the Job
+// controller records why. In that interval the Job has no condition, and the
+// run must not decide from it: it waits for the condition, here the
+// FailureTarget that arrives on its second look, and reports a timeout.
+func TestRunWaitsForTheJobsConditionAfterAKill(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cond batchv1.JobCondition
+		want error
+		exit int
+	}{
+		{"the deadline", batchv1.JobCondition{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded, Message: "simulated"}, runner.ErrTimeout, 0},
+		{"an OOM kill", batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", Message: "simulated"}, nil, 137},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fake.NewClientset()
+			tracker := client.Tracker()
+			jobsGVR := batchv1.SchemeGroupVersion.WithResource("jobs")
+			podsGVR := corev1.SchemeGroupVersion.WithResource("pods")
+			// The pod exists, already killed, from the moment the Job does.
+			client.PrependReactor("create", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+				job := a.(k8stesting.CreateAction).GetObject().(*batchv1.Job)
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-abcde", Namespace: ns, Labels: job.Spec.Template.Labels},
+					Status: corev1.PodStatus{
+						Phase:             corev1.PodFailed,
+						ContainerStatuses: []corev1.ContainerStatus{{Name: ContainerName, State: exited(137)}},
+					},
+				}
+				if err := tracker.Create(podsGVR, pod, ns); err != nil {
+					t.Errorf("create pod: %v", err)
+				}
+				return false, nil, nil
+			})
+			// The Job's condition lands only after the run has looked once.
+			var gets atomic.Int32
+			client.PrependReactor("get", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+				if gets.Add(1) != 2 {
+					return false, nil, nil
+				}
+				obj, err := tracker.Get(jobsGVR, ns, a.(k8stesting.GetAction).GetName())
+				if err != nil {
+					t.Errorf("get job: %v", err)
+					return false, nil, nil
+				}
+				job := obj.(*batchv1.Job)
+				job.Status.Conditions = []batchv1.JobCondition{tc.cond}
+				if err := tracker.Update(jobsGVR, job, ns); err != nil {
+					t.Errorf("update job: %v", err)
+				}
+				return false, nil, nil
+			})
+			e := newExecutor(t, client, nil)
+			res, _, err := run(t, e, runner.Request{ID: "r10", Command: []string{"sleep", "999"}})
+			if tc.want != nil {
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("exit=%d err=%v, want %v", res.ExitCode, err, tc.want)
+				}
+				return
+			}
+			if err != nil || res.ExitCode != tc.exit {
+				t.Fatalf("exit=%d err=%v, want exit %d", res.ExitCode, err, tc.exit)
+			}
+			if gets.Load() < 2 {
+				t.Errorf("the run decided after %d reads of the Job, before it carried a condition", gets.Load())
+			}
+		})
 	}
 }
