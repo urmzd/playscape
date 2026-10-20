@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 (2026-10-20)
+
+### Features
+
+- **runner**: add Job-backed sandboxed shell executor (#9) ([6ab98ed](https://github.com/urmzd/playscape/commit/6ab98ed27691e54e6345bfe5829c0b01bf62f126))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.4.0...v0.5.0)
+
+
 ## 0.4.0 (2026-10-18)
 
 ### Features
