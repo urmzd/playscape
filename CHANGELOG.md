@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 (2026-10-20)
+
+### Features
+
+- **tool**: let a runtime check a spawn without dispatching it (#10) ([2e5892f](https://github.com/urmzd/playscape/commit/2e5892f449e6dddf7c2cbca2bb3c670bf121d173))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.5.0...v0.6.0)
+
+
 ## 0.5.0 (2026-10-20)
 
 ### Features
