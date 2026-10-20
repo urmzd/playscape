@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,8 @@ func newExecutor(t *testing.T, client *fake.Clientset, mod func(*Config)) *Execu
 type outcome struct {
 	container corev1.ContainerState // zero: no pod is created
 	jobFailed string                // non-empty: Job Failed condition reason
+	// conditions, when set, are the Job's conditions instead of jobFailed's.
+	conditions []batchv1.JobCondition
 }
 
 // simulate plays the Job controller and kubelet: when the Job is created it
@@ -67,10 +70,13 @@ func simulate(t *testing.T, client *fake.Clientset, o outcome) {
 					t.Errorf("create pod: %v", err)
 				}
 			}
-			if o.jobFailed != "" {
-				job.Status.Conditions = []batchv1.JobCondition{{
-					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: o.jobFailed, Message: "simulated",
-				}}
+			if o.jobFailed != "" || o.conditions != nil {
+				job.Status.Conditions = o.conditions
+				if o.conditions == nil {
+					job.Status.Conditions = []batchv1.JobCondition{{
+						Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: o.jobFailed, Message: "simulated",
+					}}
+				}
 				if _, err := client.BatchV1().Jobs(ns).UpdateStatus(ctx, &job, metav1.UpdateOptions{}); err != nil {
 					t.Errorf("update job: %v", err)
 				}
@@ -329,5 +335,35 @@ func TestCommandSurvivesKubernetesExpansion(t *testing.T) {
 				t.Errorf("Kubernetes would run %q, want %q", got, tc.arg)
 			}
 		})
+	}
+}
+
+// A Job that hits its deadline is marked FailureTarget while its pod is
+// terminated and Failed after, both with reason DeadlineExceeded. Whichever of
+// them a run sees, alone or in either order, the run timed out, even when the
+// killed container has already exited.
+func TestRunDeadlineIsTimeoutWhicheverConditionIsSeen(t *testing.T) {
+	target := batchv1.JobCondition{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded, Message: "simulated"}
+	failedCond := batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded, Message: "simulated"}
+	for name, conds := range map[string][]batchv1.JobCondition{
+		"FailureTarget alone":        {target},
+		"FailureTarget, then Failed": {target, failedCond},
+		"Failed, then FailureTarget": {failedCond, target},
+	} {
+		for _, killed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, container exited %v", name, killed), func(t *testing.T) {
+				client := fake.NewClientset()
+				e := newExecutor(t, client, nil)
+				o := outcome{conditions: conds}
+				if killed {
+					o.container = exited(137)
+				}
+				simulate(t, client, o)
+				res, _, err := run(t, e, runner.Request{ID: "r8", Command: []string{"sleep", "999"}})
+				if !errors.Is(err, runner.ErrTimeout) {
+					t.Fatalf("deadline returned exit=%d err=%v, want ErrTimeout", res.ExitCode, err)
+				}
+			})
+		}
 	}
 }

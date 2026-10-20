@@ -389,13 +389,27 @@ func startFailure(p *corev1.Pod) string {
 	return ""
 }
 
+// failed returns the condition saying the Job has failed: Failed, or the
+// FailureTarget the controller sets first, while it terminates the pods, with
+// the same reason. A deadline kill is visible as FailureTarget before it is
+// as Failed, so reading only Failed reports the killed container's exit code
+// instead of a timeout.
 func failed(j *batchv1.Job) *batchv1.JobCondition {
+	var target *batchv1.JobCondition
 	for i, c := range j.Status.Conditions {
-		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch c.Type {
+		case batchv1.JobFailed:
 			return &j.Status.Conditions[i]
+		case batchv1.JobFailureTarget:
+			if target == nil {
+				target = &j.Status.Conditions[i]
+			}
 		}
 	}
-	return nil
+	return target
 }
 
 // escapeExpansion protects argv from Kubernetes' $(VAR) expansion of a
