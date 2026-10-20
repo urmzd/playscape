@@ -205,7 +205,9 @@ func (e *Executor) waitPod(ctx context.Context, job *batchv1.Job, done func(*cor
 	selector := RunLabel + "=" + job.Labels[RunLabel]
 	tick := time.NewTicker(e.cfg.PollInterval)
 	defer tick.Stop()
-	for {
+	// pod reports the Job's pod when it satisfies done; a pod that cannot
+	// start is an error.
+	pod := func() (*corev1.Pod, error) {
 		list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: selector})
 		if err != nil && ctx.Err() == nil {
 			return nil, fmt.Errorf("k8s: list pods %s: %w", selector, err)
@@ -219,10 +221,23 @@ func (e *Executor) waitPod(ctx context.Context, job *batchv1.Job, done func(*cor
 				return nil, fmt.Errorf("%w: pod %s: %s", runner.ErrStart, p.Name, reason)
 			}
 		}
+		return nil, nil
+	}
+	for {
+		if p, err := pod(); p != nil || err != nil {
+			return p, err
+		}
 		if j, err := jobs.Get(ctx, job.Name, metav1.GetOptions{}); err == nil {
 			if c := failed(j); c != nil {
 				if c.Reason == batchv1.JobReasonDeadlineExceeded {
 					return nil, fmt.Errorf("%w: job %s: %s", runner.ErrTimeout, job.Name, c.Message)
+				}
+				// The pod may have finished between the list above and
+				// this read: a container that exits non-zero fails the Job
+				// (backoffLimit is 0), and its exit code is the result, not
+				// the Job's failure. Look once more before reporting it.
+				if p, err := pod(); p != nil || err != nil {
+					return p, err
 				}
 				return nil, fmt.Errorf("k8s: job %s failed: %s: %s", job.Name, c.Reason, c.Message)
 			}

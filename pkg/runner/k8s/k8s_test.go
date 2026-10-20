@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/urmzd/playscape/pkg/runner"
 )
@@ -365,5 +368,58 @@ func TestRunDeadlineIsTimeoutWhicheverConditionIsSeen(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A container that exits non-zero fails the Job too (backoffLimit is 0), and
+// the two can land between the executor's look at the pod and its read of the
+// Job. The run still reports the exit code: the Job's failure is the exit,
+// not an error of its own. Here the first pod list is the moment both land:
+// it finds no pod, and by the Job read the pod has exited and the Job failed.
+func TestRunReportsTheExitCodeWhenTheJobFailsBetweenItsReads(t *testing.T) {
+	client := fake.NewClientset()
+	tracker := client.Tracker()
+	jobsGVR := batchv1.SchemeGroupVersion.WithResource("jobs")
+	podsGVR := corev1.SchemeGroupVersion.WithResource("pods")
+	var once sync.Once
+	client.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		first := false
+		once.Do(func() {
+			first = true
+			obj, err := tracker.Get(jobsGVR, ns, "playscape-run-r9")
+			if err != nil {
+				t.Errorf("get job: %v", err)
+				return
+			}
+			job := obj.(*batchv1.Job)
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-abcde", Namespace: ns, Labels: job.Spec.Template.Labels},
+				Status: corev1.PodStatus{
+					Phase:             corev1.PodFailed,
+					ContainerStatuses: []corev1.ContainerStatus{{Name: ContainerName, State: exited(3)}},
+				},
+			}
+			if err := tracker.Create(podsGVR, pod, ns); err != nil {
+				t.Errorf("create pod: %v", err)
+			}
+			job.Status.Conditions = []batchv1.JobCondition{{
+				Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", Message: "simulated",
+			}}
+			if err := tracker.Update(jobsGVR, job, ns); err != nil {
+				t.Errorf("fail job: %v", err)
+			}
+		})
+		if first {
+			return true, &corev1.PodList{}, nil
+		}
+		return false, nil, nil
+	})
+	e := newExecutor(t, client, nil)
+	res, _, err := run(t, e, runner.Request{ID: "r9", Command: []string{"sh", "-c", "exit 3"}})
+	if err != nil {
+		t.Fatalf("err = %v, want the exit code", err)
+	}
+	if res.ExitCode != 3 {
+		t.Fatalf("exit code = %d, want 3", res.ExitCode)
 	}
 }
