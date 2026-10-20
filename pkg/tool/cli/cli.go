@@ -236,16 +236,24 @@ func decode(input []byte) (map[string]string, error) {
 	if len(bytes.TrimSpace(input)) == 0 {
 		return vals, nil
 	}
+	// Numbers are kept as the text the caller sent. Decoding them into a
+	// float64 would round any integer past 2^53 and any decimal with more
+	// digits than a float holds, and pass the tool a different number.
 	var raw map[string]any
-	if err := json.Unmarshal(input, &raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("%w: want a JSON object: %w", ErrInvalidInput, err)
+	}
+	if dec.More() {
+		return nil, fmt.Errorf("%w: want one JSON object, got more input after it", ErrInvalidInput)
 	}
 	for k, v := range raw {
 		switch v := v.(type) {
 		case string:
 			vals[k] = v
-		case float64:
-			vals[k] = strconv.FormatFloat(v, 'f', -1, 64)
+		case json.Number:
+			vals[k] = v.String()
 		case bool:
 			vals[k] = strconv.FormatBool(v)
 		default:
