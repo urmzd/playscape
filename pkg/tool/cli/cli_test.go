@@ -178,3 +178,43 @@ func TestDefaultWorkdirIsFreshAndRemoved(t *testing.T) {
 		t.Fatalf("workdir %s not removed: %v", lines[0], err)
 	}
 }
+
+// A number reaches the command as the text the caller sent. Decoding it as a
+// float would round an integer past 2^53 or a long decimal, and run the
+// command with a different number than the one asked for.
+func TestNumbersReachTheCommandExactly(t *testing.T) {
+	tl := newTool(t, Spec{Name: "echo", Binary: "echo", Args: []string{"{n}"}})
+	for _, n := range []string{
+		"9007199254740993",            // 2^53 + 1: a float64 makes it ...992
+		"18446744073709551617",        // past uint64
+		"0.1000000000000000055511151", // more digits than a float64 keeps
+		"3",
+		"2.5",
+		"1e3",
+		"0",
+	} {
+		t.Run(n, func(t *testing.T) {
+			out, err := call(t, tl, `{"n": `+n+`}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(out.Stdout); got != n {
+				t.Errorf("the command was given %q, want %q", got, n)
+			}
+		})
+	}
+}
+
+// Input after the object is still refused, as it was when the input was
+// unmarshalled in one call.
+func TestTrailingInputIsRefused(t *testing.T) {
+	tl := newTool(t, Spec{Name: "echo", Binary: "echo", Args: []string{"{n}"}})
+	for _, input := range []string{`{"n": 1} {"n": 2}`, `{"n": 1}]`, `{"n": 1}}`, `{"n": 1},`, `{"n": 1} x`} {
+		if _, err := tl.Call(context.Background(), nil, []byte(input)); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", input, err)
+		}
+	}
+	if _, err := call(t, tl, "{\"n\": 1} \n\t"); err != nil {
+		t.Errorf("trailing whitespace: %v, want accepted", err)
+	}
+}

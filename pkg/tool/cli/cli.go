@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/urmzd/playscape/internal/procgroup"
 	"github.com/urmzd/playscape/pkg/tool"
 )
 
@@ -36,6 +38,10 @@ const (
 	// waitDelay bounds how long a call waits for output pipes after the
 	// process exits or is killed (a grandchild may still hold them).
 	waitDelay = 2 * time.Second
+	// killGrace is how long the processes of a timed-out or cancelled call
+	// have between SIGTERM and SIGKILL. It is shorter than waitDelay, so
+	// a grandchild holding the pipes is gone before they are closed on it.
+	killGrace = time.Second
 )
 
 var (
@@ -191,6 +197,9 @@ func (t *cliTool) Call(ctx context.Context, _ tool.Runtime, input []byte) ([]byt
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay
+	// A timeout or cancel ends everything the command started, not only
+	// the command: see package procgroup.
+	procgroup.Configure(cmd, killGrace)
 
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
@@ -236,16 +245,26 @@ func decode(input []byte) (map[string]string, error) {
 	if len(bytes.TrimSpace(input)) == 0 {
 		return vals, nil
 	}
+	// Numbers are kept as the text the caller sent. Decoding them into a
+	// float64 would round any integer past 2^53 and any decimal with more
+	// digits than a float holds, and pass the tool a different number.
 	var raw map[string]any
-	if err := json.Unmarshal(input, &raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("%w: want a JSON object: %w", ErrInvalidInput, err)
+	}
+	// Nothing may follow the object, not even a stray delimiter, which
+	// More does not report.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: want one JSON object, got more input after it", ErrInvalidInput)
 	}
 	for k, v := range raw {
 		switch v := v.(type) {
 		case string:
 			vals[k] = v
-		case float64:
-			vals[k] = strconv.FormatFloat(v, 'f', -1, 64)
+		case json.Number:
+			vals[k] = v.String()
 		case bool:
 			vals[k] = strconv.FormatBool(v)
 		default:

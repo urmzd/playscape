@@ -188,13 +188,72 @@ func (e *Executor) follow(ctx context.Context, job *batchv1.Job, logs io.Writer)
 		return runner.Result{}, err
 	}
 	// A deadline kill also terminates the container; report it as a
-	// timeout, not as the signal's exit code.
-	if j, err := e.client.BatchV1().Jobs(e.cfg.Namespace).Get(ctx, job.Name, metav1.GetOptions{}); err == nil {
+	// timeout, not as the signal's exit code. The kubelet can report the
+	// killed container before the Job controller records why, so a killed
+	// container is classified only once the Job carries a condition that
+	// says how it ended. Any other exit is the command's own.
+	state := terminated(pod)
+	if killed(state) {
+		c, err := e.settle(ctx, job)
+		if err != nil {
+			return runner.Result{}, err
+		}
+		if c.Type != batchv1.JobComplete && c.Reason == batchv1.JobReasonDeadlineExceeded {
+			return runner.Result{}, fmt.Errorf("%w: job %s: %s", runner.ErrTimeout, job.Name, c.Message)
+		}
+	} else if j, err := e.client.BatchV1().Jobs(e.cfg.Namespace).Get(ctx, job.Name, metav1.GetOptions{}); err == nil {
 		if c := failed(j); c != nil && c.Reason == batchv1.JobReasonDeadlineExceeded {
 			return runner.Result{}, fmt.Errorf("%w: job %s: %s", runner.ErrTimeout, job.Name, c.Message)
 		}
 	}
-	return runner.Result{ExitCode: int(terminated(pod).ExitCode)}, nil
+	return runner.Result{ExitCode: int(state.ExitCode)}, nil
+}
+
+// killed reports whether a container was ended by a signal rather than by
+// exiting: SIGKILL or SIGTERM, which is what a deadline, an OOM kill and an
+// eviction look like from the container's side.
+func killed(t *corev1.ContainerStateTerminated) bool {
+	return t.Signal != 0 || t.ExitCode == 128+9 || t.ExitCode == 128+15
+}
+
+// settle polls the Job until it carries a condition saying how it ended:
+// Complete, Failed, or the FailureTarget that comes before Failed. A Job's
+// pod with backoffLimit 0 always reaches one of them once it has terminated.
+// The wait is bounded by ctx, which Run bounds by the Job's deadline.
+func (e *Executor) settle(ctx context.Context, job *batchv1.Job) (*batchv1.JobCondition, error) {
+	jobs := e.client.BatchV1().Jobs(e.cfg.Namespace)
+	tick := time.NewTicker(e.cfg.PollInterval)
+	defer tick.Stop()
+	for {
+		j, err := jobs.Get(ctx, job.Name, metav1.GetOptions{})
+		if err != nil && ctx.Err() == nil {
+			return nil, fmt.Errorf("k8s: get job %s: %w", job.Name, err)
+		}
+		if err == nil {
+			if c := ended(j); c != nil {
+				return c, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("k8s: run %s: %w", job.Name, ctx.Err())
+		case <-tick.C:
+		}
+	}
+}
+
+// ended returns the condition saying how the Job ended, or nil while it has
+// none: a failure (see failed), or Complete.
+func ended(j *batchv1.Job) *batchv1.JobCondition {
+	if c := failed(j); c != nil {
+		return c
+	}
+	for i, c := range j.Status.Conditions {
+		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
+			return &j.Status.Conditions[i]
+		}
+	}
+	return nil
 }
 
 // waitPod polls until the Job's pod satisfies done, the Job fails, or the
@@ -205,7 +264,9 @@ func (e *Executor) waitPod(ctx context.Context, job *batchv1.Job, done func(*cor
 	selector := RunLabel + "=" + job.Labels[RunLabel]
 	tick := time.NewTicker(e.cfg.PollInterval)
 	defer tick.Stop()
-	for {
+	// pod reports the Job's pod when it satisfies done; a pod that cannot
+	// start is an error.
+	pod := func() (*corev1.Pod, error) {
 		list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: selector})
 		if err != nil && ctx.Err() == nil {
 			return nil, fmt.Errorf("k8s: list pods %s: %w", selector, err)
@@ -219,10 +280,23 @@ func (e *Executor) waitPod(ctx context.Context, job *batchv1.Job, done func(*cor
 				return nil, fmt.Errorf("%w: pod %s: %s", runner.ErrStart, p.Name, reason)
 			}
 		}
+		return nil, nil
+	}
+	for {
+		if p, err := pod(); p != nil || err != nil {
+			return p, err
+		}
 		if j, err := jobs.Get(ctx, job.Name, metav1.GetOptions{}); err == nil {
 			if c := failed(j); c != nil {
 				if c.Reason == batchv1.JobReasonDeadlineExceeded {
 					return nil, fmt.Errorf("%w: job %s: %s", runner.ErrTimeout, job.Name, c.Message)
+				}
+				// The pod may have finished between the list above and
+				// this read: a container that exits non-zero fails the Job
+				// (backoffLimit is 0), and its exit code is the result, not
+				// the Job's failure. Look once more before reporting it.
+				if p, err := pod(); p != nil || err != nil {
+					return p, err
 				}
 				return nil, fmt.Errorf("k8s: job %s failed: %s: %s", job.Name, c.Reason, c.Message)
 			}
@@ -279,7 +353,9 @@ func (e *Executor) Job(req runner.Request) (*batchv1.Job, error) {
 
 	env := make([]corev1.EnvVar, 0, len(req.Env))
 	for k, v := range req.Env {
-		env = append(env, corev1.EnvVar{Name: k, Value: v})
+		// Kubernetes expands $(NAME) and $$ in env values as it does in
+		// the command (see escapeExpansion), so a value is escaped too.
+		env = append(env, corev1.EnvVar{Name: k, Value: escapeValue(v)})
 	}
 
 	scratch := limits[corev1.ResourceEphemeralStorage]
@@ -306,7 +382,7 @@ func (e *Executor) Job(req runner.Request) (*batchv1.Job, error) {
 						Name:            ContainerName,
 						Image:           image,
 						ImagePullPolicy: e.cfg.ImagePullPolicy,
-						Command:         req.Command,
+						Command:         escapeExpansion(req.Command),
 						Env:             env,
 						WorkingDir:      workDir,
 						Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
@@ -389,13 +465,49 @@ func startFailure(p *corev1.Pod) string {
 	return ""
 }
 
+// failed returns the condition saying the Job has failed: Failed, or the
+// FailureTarget the controller sets first, while it terminates the pods, with
+// the same reason. A deadline kill is visible as FailureTarget before it is
+// as Failed, so reading only Failed reports the killed container's exit code
+// instead of a timeout.
 func failed(j *batchv1.Job) *batchv1.JobCondition {
+	var target *batchv1.JobCondition
 	for i, c := range j.Status.Conditions {
-		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch c.Type {
+		case batchv1.JobFailed:
 			return &j.Status.Conditions[i]
+		case batchv1.JobFailureTarget:
+			if target == nil {
+				target = &j.Status.Conditions[i]
+			}
 		}
 	}
-	return nil
+	return target
 }
+
+// escapeExpansion protects argv from Kubernetes' $(VAR) expansion of a
+// container's command and args. Kubernetes replaces $(NAME) with a variable
+// from the container's environment and $$ with $, so argv passed through
+// unchanged is not the argv that runs: a shell's "echo $$" would print "$"
+// instead of a process id, and "$(HOME)" would be replaced before the shell
+// saw it. Doubling every $ makes Kubernetes hand the process exactly the
+// argv the request carried.
+func escapeExpansion(argv []string) []string {
+	if argv == nil {
+		return nil
+	}
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		out[i] = escapeValue(a)
+	}
+	return out
+}
+
+// escapeValue doubles every $ in one value, so Kubernetes' expansion of it
+// yields the value as given.
+func escapeValue(v string) string { return strings.ReplaceAll(v, "$", "$$") }
 
 func ptr[T any](v T) *T { return &v }

@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,7 +15,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/urmzd/playscape/pkg/runner"
 )
@@ -35,6 +41,8 @@ func newExecutor(t *testing.T, client *fake.Clientset, mod func(*Config)) *Execu
 type outcome struct {
 	container corev1.ContainerState // zero: no pod is created
 	jobFailed string                // non-empty: Job Failed condition reason
+	// conditions, when set, are the Job's conditions instead of jobFailed's.
+	conditions []batchv1.JobCondition
 }
 
 // simulate plays the Job controller and kubelet: when the Job is created it
@@ -66,10 +74,13 @@ func simulate(t *testing.T, client *fake.Clientset, o outcome) {
 					t.Errorf("create pod: %v", err)
 				}
 			}
-			if o.jobFailed != "" {
-				job.Status.Conditions = []batchv1.JobCondition{{
-					Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: o.jobFailed, Message: "simulated",
-				}}
+			if o.jobFailed != "" || o.conditions != nil {
+				job.Status.Conditions = o.conditions
+				if o.conditions == nil {
+					job.Status.Conditions = []batchv1.JobCondition{{
+						Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: o.jobFailed, Message: "simulated",
+					}}
+				}
 				if _, err := client.BatchV1().Jobs(ns).UpdateStatus(ctx, &job, metav1.UpdateOptions{}); err != nil {
 					t.Errorf("update job: %v", err)
 				}
@@ -264,5 +275,247 @@ func TestNewValidates(t *testing.T) {
 	}
 	if _, err := New(fake.NewClientset(), Config{}); err == nil {
 		t.Fatal("empty namespace accepted")
+	}
+}
+
+// kubeExpand applies Kubernetes' expansion of a container's command and args,
+// as documented for define-command-argument-container: $$ becomes $, $(NAME)
+// becomes NAME's value when the container's environment defines it, and
+// anything else is left as it is.
+func kubeExpand(s string, env map[string]string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '$' || i+1 == len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case '$':
+			b.WriteByte('$')
+			i++
+		case '(':
+			end := strings.IndexByte(s[i+2:], ')')
+			if end < 0 {
+				b.WriteByte(s[i])
+				continue
+			}
+			name := s[i+2 : i+2+end]
+			if v, ok := env[name]; ok {
+				b.WriteString(v)
+			} else {
+				b.WriteString(s[i : i+3+end])
+			}
+			i += 2 + end
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// The argv a request carries is the argv the process runs: the rendered Pod
+// spec escapes every $ so Kubernetes' expansion gives the request's text back,
+// whether it is a shell's $$, a $(NAME) the environment defines, or a lone $.
+func TestCommandSurvivesKubernetesExpansion(t *testing.T) {
+	e := newExecutor(t, fake.NewClientset(), nil)
+	env := map[string]string{"HOME": "/work"}
+	tests := []struct{ name, arg, rendered string }{
+		{"shell pid", "echo $$", "echo $$$$"},
+		{"a variable the container defines", "echo $(HOME)", "echo $$(HOME)"},
+		{"a lone dollar", "costs $5 or $", "costs $$5 or $$"},
+		{"no dollar", "echo hi", "echo hi"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			job, err := e.Job(runner.Request{ID: "r7", Command: []string{"sh", "-c", tc.arg}, Env: env})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := job.Spec.Template.Spec.Containers[0].Command
+			if cmd[2] != tc.rendered {
+				t.Errorf("rendered %q, want %q", cmd[2], tc.rendered)
+			}
+			if got := kubeExpand(cmd[2], env); got != tc.arg {
+				t.Errorf("Kubernetes would run %q, want %q", got, tc.arg)
+			}
+		})
+	}
+}
+
+// A Job that hits its deadline is marked FailureTarget while its pod is
+// terminated and Failed after, both with reason DeadlineExceeded. Whichever of
+// them a run sees, alone or in either order, the run timed out, even when the
+// killed container has already exited.
+func TestRunDeadlineIsTimeoutWhicheverConditionIsSeen(t *testing.T) {
+	target := batchv1.JobCondition{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded, Message: "simulated"}
+	failedCond := batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded, Message: "simulated"}
+	for name, conds := range map[string][]batchv1.JobCondition{
+		"FailureTarget alone":        {target},
+		"FailureTarget, then Failed": {target, failedCond},
+		"Failed, then FailureTarget": {failedCond, target},
+	} {
+		for _, killed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, container exited %v", name, killed), func(t *testing.T) {
+				client := fake.NewClientset()
+				e := newExecutor(t, client, nil)
+				o := outcome{conditions: conds}
+				if killed {
+					o.container = exited(137)
+				}
+				simulate(t, client, o)
+				res, _, err := run(t, e, runner.Request{ID: "r8", Command: []string{"sleep", "999"}})
+				if !errors.Is(err, runner.ErrTimeout) {
+					t.Fatalf("deadline returned exit=%d err=%v, want ErrTimeout", res.ExitCode, err)
+				}
+			})
+		}
+	}
+}
+
+// A container that exits non-zero fails the Job too (backoffLimit is 0), and
+// the two can land between the executor's look at the pod and its read of the
+// Job. The run still reports the exit code: the Job's failure is the exit,
+// not an error of its own. Here the first pod list is the moment both land:
+// it finds no pod, and by the Job read the pod has exited and the Job failed.
+func TestRunReportsTheExitCodeWhenTheJobFailsBetweenItsReads(t *testing.T) {
+	client := fake.NewClientset()
+	tracker := client.Tracker()
+	jobsGVR := batchv1.SchemeGroupVersion.WithResource("jobs")
+	podsGVR := corev1.SchemeGroupVersion.WithResource("pods")
+	var once sync.Once
+	client.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		first := false
+		once.Do(func() {
+			first = true
+			obj, err := tracker.Get(jobsGVR, ns, "playscape-run-r9")
+			if err != nil {
+				t.Errorf("get job: %v", err)
+				return
+			}
+			job := obj.(*batchv1.Job)
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-abcde", Namespace: ns, Labels: job.Spec.Template.Labels},
+				Status: corev1.PodStatus{
+					Phase:             corev1.PodFailed,
+					ContainerStatuses: []corev1.ContainerStatus{{Name: ContainerName, State: exited(3)}},
+				},
+			}
+			if err := tracker.Create(podsGVR, pod, ns); err != nil {
+				t.Errorf("create pod: %v", err)
+			}
+			job.Status.Conditions = []batchv1.JobCondition{{
+				Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", Message: "simulated",
+			}}
+			if err := tracker.Update(jobsGVR, job, ns); err != nil {
+				t.Errorf("fail job: %v", err)
+			}
+		})
+		if first {
+			return true, &corev1.PodList{}, nil
+		}
+		return false, nil, nil
+	})
+	e := newExecutor(t, client, nil)
+	res, _, err := run(t, e, runner.Request{ID: "r9", Command: []string{"sh", "-c", "exit 3"}})
+	if err != nil {
+		t.Fatalf("err = %v, want the exit code", err)
+	}
+	if res.ExitCode != 3 {
+		t.Fatalf("exit code = %d, want 3", res.ExitCode)
+	}
+}
+
+// The kubelet can report a container the deadline killed before the Job
+// controller records why. In that interval the Job has no condition, and the
+// run must not decide from it: it waits for the condition, here the
+// FailureTarget that arrives on its second look, and reports a timeout.
+func TestRunWaitsForTheJobsConditionAfterAKill(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cond batchv1.JobCondition
+		want error
+		exit int
+	}{
+		{"the deadline", batchv1.JobCondition{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded, Message: "simulated"}, runner.ErrTimeout, 0},
+		{"an OOM kill", batchv1.JobCondition{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded", Message: "simulated"}, nil, 137},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fake.NewClientset()
+			tracker := client.Tracker()
+			jobsGVR := batchv1.SchemeGroupVersion.WithResource("jobs")
+			podsGVR := corev1.SchemeGroupVersion.WithResource("pods")
+			// The pod exists, already killed, from the moment the Job does.
+			client.PrependReactor("create", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+				job := a.(k8stesting.CreateAction).GetObject().(*batchv1.Job)
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-abcde", Namespace: ns, Labels: job.Spec.Template.Labels},
+					Status: corev1.PodStatus{
+						Phase:             corev1.PodFailed,
+						ContainerStatuses: []corev1.ContainerStatus{{Name: ContainerName, State: exited(137)}},
+					},
+				}
+				if err := tracker.Create(podsGVR, pod, ns); err != nil {
+					t.Errorf("create pod: %v", err)
+				}
+				return false, nil, nil
+			})
+			// The Job's condition lands only after the run has looked once.
+			var gets atomic.Int32
+			client.PrependReactor("get", "jobs", func(a k8stesting.Action) (bool, runtime.Object, error) {
+				if gets.Add(1) != 2 {
+					return false, nil, nil
+				}
+				obj, err := tracker.Get(jobsGVR, ns, a.(k8stesting.GetAction).GetName())
+				if err != nil {
+					t.Errorf("get job: %v", err)
+					return false, nil, nil
+				}
+				job := obj.(*batchv1.Job)
+				job.Status.Conditions = []batchv1.JobCondition{tc.cond}
+				if err := tracker.Update(jobsGVR, job, ns); err != nil {
+					t.Errorf("update job: %v", err)
+				}
+				return false, nil, nil
+			})
+			e := newExecutor(t, client, nil)
+			res, _, err := run(t, e, runner.Request{ID: "r10", Command: []string{"sleep", "999"}})
+			if tc.want != nil {
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("exit=%d err=%v, want %v", res.ExitCode, err, tc.want)
+				}
+				return
+			}
+			if err != nil || res.ExitCode != tc.exit {
+				t.Fatalf("exit=%d err=%v, want exit %d", res.ExitCode, err, tc.exit)
+			}
+			if gets.Load() < 2 {
+				t.Errorf("the run decided after %d reads of the Job, before it carried a condition", gets.Load())
+			}
+		})
+	}
+}
+
+// An env value is expanded by Kubernetes like the command is, so it is escaped
+// the same way and reaches the process as the request gave it.
+func TestEnvValuesSurviveKubernetesExpansion(t *testing.T) {
+	e := newExecutor(t, fake.NewClientset(), nil)
+	values := map[string]string{
+		"TOKEN": "a$$b",
+		"REF":   "$(HOME)/x",
+		"LONE":  "costs $5 or $",
+		"PLAIN": "plain",
+	}
+	job, err := e.Job(runner.Request{ID: "r11", Command: []string{"env"}, Env: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	for _, v := range job.Spec.Template.Spec.Containers[0].Env {
+		env[v.Name] = v.Value
+	}
+	for name, want := range values {
+		if got := kubeExpand(env[name], map[string]string{"HOME": "/work"}); got != want {
+			t.Errorf("%s: Kubernetes would set %q, want %q", name, got, want)
+		}
 	}
 }

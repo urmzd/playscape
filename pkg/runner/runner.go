@@ -18,7 +18,13 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/urmzd/playscape/internal/procgroup"
 )
+
+// killGrace is how long the processes of a timed-out or cancelled local run
+// have between SIGTERM and SIGKILL.
+const killGrace = time.Second
 
 var (
 	// ErrInvalidRequest is returned for a malformed Request.
@@ -118,6 +124,9 @@ func (Local) Run(ctx context.Context, req Request, logs io.Writer) (Result, erro
 	w := &syncWriter{w: logs}
 	cmd.Stdout, cmd.Stderr = w, w
 	cmd.WaitDelay = 2 * time.Second
+	// A timeout or cancel ends everything the command started, not only
+	// the command: see package procgroup.
+	procgroup.Configure(cmd, killGrace)
 
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
