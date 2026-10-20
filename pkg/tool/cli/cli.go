@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/urmzd/playscape/internal/procgroup"
 	"github.com/urmzd/playscape/pkg/tool"
 )
 
@@ -37,6 +38,10 @@ const (
 	// waitDelay bounds how long a call waits for output pipes after the
 	// process exits or is killed (a grandchild may still hold them).
 	waitDelay = 2 * time.Second
+	// killGrace is how long the processes of a timed-out or cancelled call
+	// have between SIGTERM and SIGKILL. It is shorter than waitDelay, so
+	// a grandchild holding the pipes is gone before they are closed on it.
+	killGrace = time.Second
 )
 
 var (
@@ -192,6 +197,9 @@ func (t *cliTool) Call(ctx context.Context, _ tool.Runtime, input []byte) ([]byt
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay
+	// A timeout or cancel ends everything the command started, not only
+	// the command: see package procgroup.
+	procgroup.Configure(cmd, killGrace)
 
 	runErr := cmd.Run()
 	if ctx.Err() != nil {

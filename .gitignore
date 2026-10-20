@@ -17,3 +17,6 @@ coverage.html
 
 # direnv
 .direnv/
+
+# Built example binary
+examples/saige/saige
