@@ -1,0 +1,48 @@
+# RBAC for the Job-backed run executor (pkg/runner/k8s). Bind this service
+# account to the pod that embeds the executor (for example, set
+# `serviceAccountName: playscape-runner` on a worker Deployment that
+# registers a runner.Shell tool). Run pods themselves get no token:
+# the executor sets automountServiceAccountToken: false on every Job.
+#
+# The Role is namespaced: the executor can only create and observe Jobs in
+# the namespace it is configured with. Apply it in that namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playscape-runner
+  labels:
+    app.kubernetes.io/name: playscape
+    app.kubernetes.io/component: runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: playscape-runner
+  labels:
+    app.kubernetes.io/name: playscape
+    app.kubernetes.io/component: runner
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: playscape-runner
+  labels:
+    app.kubernetes.io/name: playscape
+    app.kubernetes.io/component: runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: playscape-runner
+subjects:
+  - kind: ServiceAccount
+    name: playscape-runner
