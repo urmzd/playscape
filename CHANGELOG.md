@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 (2026-10-20)
+
+### Bug Fixes
+
+- exact CLI arguments, Kubernetes expansion and timeouts, process-group cancel (#11) ([ee48cda](https://github.com/urmzd/playscape/commit/ee48cda705e0fdea52471757d3e405a3f207ddcf))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.6.0...v0.6.1)
+
+
 ## 0.5.0 (2026-10-20)
 
 ### Features
