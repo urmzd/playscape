@@ -494,3 +494,28 @@ func TestRunWaitsForTheJobsConditionAfterAKill(t *testing.T) {
 		})
 	}
 }
+
+// An env value is expanded by Kubernetes like the command is, so it is escaped
+// the same way and reaches the process as the request gave it.
+func TestEnvValuesSurviveKubernetesExpansion(t *testing.T) {
+	e := newExecutor(t, fake.NewClientset(), nil)
+	values := map[string]string{
+		"TOKEN": "a$$b",
+		"REF":   "$(HOME)/x",
+		"LONE":  "costs $5 or $",
+		"PLAIN": "plain",
+	}
+	job, err := e.Job(runner.Request{ID: "r11", Command: []string{"env"}, Env: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	for _, v := range job.Spec.Template.Spec.Containers[0].Env {
+		env[v.Name] = v.Value
+	}
+	for name, want := range values {
+		if got := kubeExpand(env[name], map[string]string{"HOME": "/work"}); got != want {
+			t.Errorf("%s: Kubernetes would set %q, want %q", name, got, want)
+		}
+	}
+}

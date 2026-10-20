@@ -353,7 +353,9 @@ func (e *Executor) Job(req runner.Request) (*batchv1.Job, error) {
 
 	env := make([]corev1.EnvVar, 0, len(req.Env))
 	for k, v := range req.Env {
-		env = append(env, corev1.EnvVar{Name: k, Value: v})
+		// Kubernetes expands $(NAME) and $$ in env values as it does in
+		// the command (see escapeExpansion), so a value is escaped too.
+		env = append(env, corev1.EnvVar{Name: k, Value: escapeValue(v)})
 	}
 
 	scratch := limits[corev1.ResourceEphemeralStorage]
@@ -499,9 +501,13 @@ func escapeExpansion(argv []string) []string {
 	}
 	out := make([]string, len(argv))
 	for i, a := range argv {
-		out[i] = strings.ReplaceAll(a, "$", "$$")
+		out[i] = escapeValue(a)
 	}
 	return out
 }
+
+// escapeValue doubles every $ in one value, so Kubernetes' expansion of it
+// yields the value as given.
+func escapeValue(v string) string { return strings.ReplaceAll(v, "$", "$$") }
 
 func ptr[T any](v T) *T { return &v }
