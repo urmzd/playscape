@@ -29,6 +29,16 @@ type Runtime interface {
 	Spawn(ctx context.Context, t task.Task) (string, error)
 }
 
+// SpawnChecker is implemented by a Runtime that can say whether it would
+// admit a spawn of tool without submitting anything. CheckSpawn returns
+// exactly the error Spawn would return for a task of that tool before it
+// dispatches it, nil when Spawn would dispatch. It lets a tool that carries
+// out a sub-task itself, rather than spawning it, hold that sub-task to the
+// same decision. It is optional: a caller type-asserts for it.
+type SpawnChecker interface {
+	CheckSpawn(tool string) error
+}
+
 // Tool is one named capability.
 type Tool interface {
 	// Name uniquely identifies the tool within a registry and is the key

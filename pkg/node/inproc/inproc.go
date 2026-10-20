@@ -114,12 +114,23 @@ type runtime struct {
 
 func (r *runtime) Workspace() workspace.Workspace { return r.ws }
 
+var _ tool.SpawnChecker = (*runtime)(nil)
+
 func (r *runtime) Spawn(ctx context.Context, t task.Task) (string, error) {
-	if r.spawn == nil {
-		return "", fmt.Errorf("%w: user %q: spawning disabled on this node", sandbox.ErrDenied, r.user)
-	}
-	if r.pdp == nil || !r.pdp.Can(r.user, sandbox.OpSpawn, sandbox.SpawnObject(t.Tool)) {
-		return "", fmt.Errorf("%w: user %q may not spawn %q", sandbox.ErrDenied, r.user, t.Tool)
+	if err := r.CheckSpawn(t.Tool); err != nil {
+		return "", err
 	}
 	return r.spawn(ctx, t)
+}
+
+// CheckSpawn implements tool.SpawnChecker: the decision Spawn makes before it
+// dispatches, and nothing else.
+func (r *runtime) CheckSpawn(target string) error {
+	if r.spawn == nil {
+		return fmt.Errorf("%w: user %q: spawning disabled on this node", sandbox.ErrDenied, r.user)
+	}
+	if r.pdp == nil || !r.pdp.Can(r.user, sandbox.OpSpawn, sandbox.SpawnObject(target)) {
+		return fmt.Errorf("%w: user %q may not spawn %q", sandbox.ErrDenied, r.user, target)
+	}
+	return nil
 }
