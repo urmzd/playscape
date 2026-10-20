@@ -306,7 +306,7 @@ func (e *Executor) Job(req runner.Request) (*batchv1.Job, error) {
 						Name:            ContainerName,
 						Image:           image,
 						ImagePullPolicy: e.cfg.ImagePullPolicy,
-						Command:         req.Command,
+						Command:         escapeExpansion(req.Command),
 						Env:             env,
 						WorkingDir:      workDir,
 						Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
@@ -396,6 +396,24 @@ func failed(j *batchv1.Job) *batchv1.JobCondition {
 		}
 	}
 	return nil
+}
+
+// escapeExpansion protects argv from Kubernetes' $(VAR) expansion of a
+// container's command and args. Kubernetes replaces $(NAME) with a variable
+// from the container's environment and $$ with $, so argv passed through
+// unchanged is not the argv that runs: a shell's "echo $$" would print "$"
+// instead of a process id, and "$(HOME)" would be replaced before the shell
+// saw it. Doubling every $ makes Kubernetes hand the process exactly the
+// argv the request carried.
+func escapeExpansion(argv []string) []string {
+	if argv == nil {
+		return nil
+	}
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		out[i] = strings.ReplaceAll(a, "$", "$$")
+	}
+	return out
 }
 
 func ptr[T any](v T) *T { return &v }

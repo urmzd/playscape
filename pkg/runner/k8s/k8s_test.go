@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,5 +265,69 @@ func TestNewValidates(t *testing.T) {
 	}
 	if _, err := New(fake.NewClientset(), Config{}); err == nil {
 		t.Fatal("empty namespace accepted")
+	}
+}
+
+// kubeExpand applies Kubernetes' expansion of a container's command and args,
+// as documented for define-command-argument-container: $$ becomes $, $(NAME)
+// becomes NAME's value when the container's environment defines it, and
+// anything else is left as it is.
+func kubeExpand(s string, env map[string]string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '$' || i+1 == len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		switch s[i+1] {
+		case '$':
+			b.WriteByte('$')
+			i++
+		case '(':
+			end := strings.IndexByte(s[i+2:], ')')
+			if end < 0 {
+				b.WriteByte(s[i])
+				continue
+			}
+			name := s[i+2 : i+2+end]
+			if v, ok := env[name]; ok {
+				b.WriteString(v)
+			} else {
+				b.WriteString(s[i : i+3+end])
+			}
+			i += 2 + end
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// The argv a request carries is the argv the process runs: the rendered Pod
+// spec escapes every $ so Kubernetes' expansion gives the request's text back,
+// whether it is a shell's $$, a $(NAME) the environment defines, or a lone $.
+func TestCommandSurvivesKubernetesExpansion(t *testing.T) {
+	e := newExecutor(t, fake.NewClientset(), nil)
+	env := map[string]string{"HOME": "/work"}
+	tests := []struct{ name, arg, rendered string }{
+		{"shell pid", "echo $$", "echo $$$$"},
+		{"a variable the container defines", "echo $(HOME)", "echo $$(HOME)"},
+		{"a lone dollar", "costs $5 or $", "costs $$5 or $$"},
+		{"no dollar", "echo hi", "echo hi"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			job, err := e.Job(runner.Request{ID: "r7", Command: []string{"sh", "-c", tc.arg}, Env: env})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := job.Spec.Template.Spec.Containers[0].Command
+			if cmd[2] != tc.rendered {
+				t.Errorf("rendered %q, want %q", cmd[2], tc.rendered)
+			}
+			if got := kubeExpand(cmd[2], env); got != tc.arg {
+				t.Errorf("Kubernetes would run %q, want %q", got, tc.arg)
+			}
+		})
 	}
 }
