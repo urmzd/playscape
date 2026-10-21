@@ -259,7 +259,7 @@ func execRun(ctx context.Context, cfg runConfig, stdout io.Writer) (report, erro
 		return rep, err
 	}
 
-	var out io.Writer = stdout
+	out := stdout
 	var captured *capture
 	if cfg.json {
 		captured = &capture{max: maxCapturedOutput}
@@ -308,7 +308,7 @@ func stageAndRun(ctx context.Context, ws workspace.Workspace, cfg runConfig, out
 	if err != nil {
 		return fmt.Errorf("scratch: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	staged, err := stage(ctx, ws, root)
 	if err != nil {

@@ -100,7 +100,7 @@ func escapeFixture(t *testing.T) (ws *workspace.Local, outside string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ws.Close() })
+	t.Cleanup(func() { _ = ws.Close() })
 	if err := os.Symlink(outside, filepath.Join(dir, "out")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
