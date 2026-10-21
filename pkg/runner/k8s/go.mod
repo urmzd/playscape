@@ -3,7 +3,7 @@ module github.com/urmzd/playscape/pkg/runner/k8s
 go 1.26.4
 
 require (
-	github.com/urmzd/playscape v0.6.1
+	github.com/urmzd/playscape v0.7.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
