@@ -92,14 +92,19 @@ type Executor interface {
 // DefaultTimeout bounds a run whose Request.Timeout is zero.
 const DefaultTimeout = 5 * time.Minute
 
-// Local runs requests as host processes in a fresh temporary directory.
-// It is not a sandbox: the process has the caller's privileges. Use it for
-// development and tests; use runner/k8s for isolation. Image and Resources
-// are ignored.
-type Local struct{}
+// Local runs requests as host processes. It is not a sandbox: the process
+// has the caller's privileges. Use it for development and tests; use
+// runner/k8s for isolation. Image and Resources are ignored.
+type Local struct {
+	// Dir is the working directory of every run. Empty runs each one in a
+	// fresh temporary directory removed afterwards. A set Dir belongs to
+	// the caller: it is neither created nor removed, and concurrent runs
+	// share it.
+	Dir string
+}
 
 // Run implements Executor.
-func (Local) Run(ctx context.Context, req Request, logs io.Writer) (Result, error) {
+func (l Local) Run(ctx context.Context, req Request, logs io.Writer) (Result, error) {
 	if err := req.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -107,11 +112,15 @@ func (Local) Run(ctx context.Context, req Request, logs io.Writer) (Result, erro
 	if timeout == 0 {
 		timeout = DefaultTimeout
 	}
-	dir, err := os.MkdirTemp("", "playscape-run-*")
-	if err != nil {
-		return Result{}, fmt.Errorf("runner: local: workdir: %w", err)
+	dir := l.Dir
+	if dir == "" {
+		tmp, err := os.MkdirTemp("", "playscape-run-*")
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: local: workdir: %w", err)
+		}
+		defer os.RemoveAll(tmp)
+		dir = tmp
 	}
-	defer os.RemoveAll(dir)
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
