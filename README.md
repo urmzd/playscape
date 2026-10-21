@@ -206,6 +206,16 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 This repo's conventions are available as portable agent skills in [`skills/`](skills/).
 
+## Where this sits
+
+playscape is the second of five layers (warp, fiber, saige, playscape,
+anchor): where an agent's turn runs, and what it may touch. It builds on
+anchor and is built on by saige and fiber, which run their commands and file
+access through it. Its server, CLI and queue are being retired so it is a
+library chosen in code, like the rest of the stack below warp. [The
+ecosystem](https://github.com/urmzd/warp/blob/main/docs/ecosystem.md) lists who owns what, the remaining duplication and the
+stack's limitations in one place.
+
 ## License
 
 [Apache-2.0](LICENSE)
