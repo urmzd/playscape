@@ -1,6 +1,6 @@
 // Basic example: compose a control plane from the orthogonal pieces
 // (a local workspace, a sandboxed tool, an in-process node factory, and an
-// in-memory metrics recorder), then deploy a service, scale it out, submit
+// in-memory metrics recorder), then deploy a service, size its pool, submit
 // tasks, and print the resulting metrics.
 //
 // Prerequisites: none. Run with:
@@ -69,7 +69,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Scale out; submitted tasks are consumed by competing nodes.
+	// Grow the pool to three nodes; each runs one task at a time.
 	if err := plane.Scale(ctx, "greeter", 3); err != nil {
 		log.Fatal(err)
 	}

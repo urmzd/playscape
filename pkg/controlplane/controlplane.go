@@ -1,14 +1,15 @@
 // Package controlplane defines the deployment surface of playscape: deploy a
-// single service, scale its agent execution nodes, produce tasks for them,
-// and observe the result. It is the composition root — the only package that
-// knows about queues, nodes, sandbox policies, and metrics together; each of
-// those stays ignorant of the others.
+// service, size its pool of agent execution nodes, submit tasks to it, and
+// observe the result. It is the composition root: the only package that
+// knows about nodes, sandbox policies, and metrics together; each of those
+// stays ignorant of the others.
 //
-// Execution is producer/consumer: Submit and SubmitAsync enqueue tasks, and
-// competing consumers dequeue them. Scale adjusts the local consumers;
-// remote consumers (Kubernetes pods, serverless containers running
-// `playscape work`) attach to the same deployment through the Consumer
-// interface and scale independently under their own orchestrator.
+// Execution is in-process. Each deployment owns a bounded pool of nodes,
+// each running one task at a time, and a bounded backlog of tasks waiting
+// for a free node. Nothing is persisted: a task lives as long as the
+// process does. Durable, retried execution belongs to the caller (in the
+// stack, anchor runs wrap the tasks), so this package does not pretend to
+// it.
 package controlplane
 
 import (
@@ -20,19 +21,31 @@ import (
 	"github.com/urmzd/playscape/pkg/task"
 )
 
-// ErrNotFound is returned when a deployment name is unknown.
-var ErrNotFound = errors.New("controlplane: deployment not found")
-
-// ErrExists is returned when deploying a name that is already taken.
-var ErrExists = errors.New("controlplane: deployment already exists")
+var (
+	// ErrNotFound is returned when a deployment name is unknown.
+	ErrNotFound = errors.New("controlplane: deployment not found")
+	// ErrExists is returned when deploying a name that is already taken.
+	ErrExists = errors.New("controlplane: deployment already exists")
+	// ErrUnknownTask is returned by Result for a task ID the deployment
+	// was never given, or whose result it no longer keeps.
+	ErrUnknownTask = errors.New("controlplane: unknown task")
+	// ErrFull is returned by SubmitAsync when a deployment's backlog of
+	// tasks waiting for a node is full.
+	ErrFull = errors.New("controlplane: backlog full")
+	// ErrClosed is returned once the control plane has been closed, and is
+	// the error of every task it failed while closing.
+	ErrClosed = errors.New("controlplane: closed")
+)
 
 // ServiceSpec declares one service: a set of tools, the capabilities each is
-// granted, and how many local nodes to start with.
+// granted, and how many of its tasks may run at once.
 type ServiceSpec struct {
 	// Name uniquely identifies the deployment.
 	Name string `json:"name"`
-	// Replicas is the initial local node count. Zero means one; deploy
-	// with a negative value for no local nodes (remote consumers only).
+	// Replicas is the initial node count, which is how many of the
+	// deployment's tasks run at once. Zero means one. A negative value
+	// starts the deployment with no nodes: its tasks wait in the backlog
+	// until Scale adds some.
 	Replicas int `json:"replicas,omitempty"`
 	// Policies grant each tool its workspace areas and spawn targets. A
 	// tool not listed here executes with no workspace access and no
@@ -59,49 +72,46 @@ func (s ServiceSpec) PDP() (sandbox.PDP, error) {
 	return sandbox.FromPolicies(s.Policies), nil
 }
 
-// NodeStatus reports one local node's identity and condition.
+// NodeStatus reports one node's identity and condition.
 type NodeStatus struct {
 	ID     string `json:"id"`
 	Health string `json:"health"`
+	// Busy reports whether the node is running a task.
+	Busy bool `json:"busy"`
 }
 
-// DeploymentStatus reports a deployment's current shape. Replicas counts
-// local nodes only; remote consumers are owned and counted by their own
-// orchestrator.
+// DeploymentStatus reports a deployment's current shape.
 type DeploymentStatus struct {
-	Name     string       `json:"name"`
-	Replicas int          `json:"replicas"`
-	Nodes    []NodeStatus `json:"nodes"`
+	Name string `json:"name"`
+	// Replicas is the node count the deployment is sized to.
+	Replicas int `json:"replicas"`
+	// Nodes lists the nodes it holds. After a scale-down this can briefly
+	// exceed Replicas: a busy node retires when its task returns.
+	Nodes []NodeStatus `json:"nodes"`
+	// Pending counts tasks waiting for a free node.
+	Pending int `json:"pending"`
 }
 
-// ControlPlane is the producer-facing surface: deploy, scale, submit,
-// observe.
+// ControlPlane is the surface callers drive: deploy, scale, submit, observe.
 type ControlPlane interface {
-	// Deploy creates a deployment from spec and starts its local nodes.
+	// Deploy creates a deployment from spec and starts its nodes.
 	Deploy(ctx context.Context, spec ServiceSpec) error
-	// Scale sets the deployment's local node count.
+	// Scale sets the deployment's node count.
 	Scale(ctx context.Context, name string, replicas int) error
-	// Submit enqueues t and blocks until its result arrives.
+	// Submit runs t and blocks until its result arrives or ctx ends. A
+	// task that fails returns its result together with an error. Ending
+	// ctx stops the wait, not the task.
 	Submit(ctx context.Context, name string, t task.Task) (task.Result, error)
-	// SubmitAsync enqueues t and returns its task ID immediately.
+	// SubmitAsync accepts t and returns its task ID immediately.
 	SubmitAsync(ctx context.Context, name string, t task.Task) (string, error)
-	// Result returns the result for a task if it has arrived.
+	// Result returns a task's result and whether it has finished. It fails
+	// with ErrUnknownTask for an ID the deployment does not know.
 	Result(ctx context.Context, name, taskID string) (task.Result, bool, error)
-	// Spec returns the deployment's service spec (remote consumers fetch
-	// it to reconstruct sandbox policies).
+	// Spec returns the deployment's service spec, so a caller can rebuild
+	// its policy decisions (for a sub-task run on its parent's node, say).
 	Spec(ctx context.Context, name string) (ServiceSpec, error)
 	// Status reports one deployment.
 	Status(ctx context.Context, name string) (DeploymentStatus, error)
 	// List reports every deployment in lexical name order.
 	List(ctx context.Context) ([]DeploymentStatus, error)
-}
-
-// Consumer is the consumer-facing surface remote workers attach to: lease
-// work, report outcomes.
-type Consumer interface {
-	// Lease blocks until a task is available for the deployment or ctx
-	// is done.
-	Lease(ctx context.Context, name string) (task.Task, error)
-	// Report records the result of a leased task.
-	Report(ctx context.Context, name string, r task.Result) error
 }

@@ -3,9 +3,9 @@
 // Each playscape task runs a saige agent inside a sandboxed tool. The agent's
 // answer is written to the tool's workspace area ("agents/..."); a write
 // outside that area is blocked by the sandbox. The deployment scales to
-// three competing consumer nodes, and the agent is self-referential: when
-// asked to delegate, it spawns a sub-task that another node picks up — an
-// agent calling an agent, gated by the policy's spawn allowlist.
+// three nodes, and the agent is self-referential: when asked to delegate,
+// it spawns a sub-task that another node picks up (an agent calling an
+// agent), gated by the policy's spawn allowlist.
 //
 // The agent uses saige's agenttest.ScriptedProvider, so no LLM backend or
 // API key is required. Swap in an Ollama/OpenAI/Anthropic provider for real

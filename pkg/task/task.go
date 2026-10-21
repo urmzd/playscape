@@ -1,7 +1,7 @@
 // Package task defines the unit of work that flows through playscape:
-// produced by API clients or by agents spawning sub-tasks, carried by a
-// queue, and consumed by agent execution nodes. It is a leaf package —
-// every other layer speaks these types without depending on one another.
+// submitted by a program or by an agent spawning a sub-task, and run by an
+// agent execution node. It is a leaf package: every other layer speaks
+// these types without depending on one another.
 package task
 
 import (
@@ -11,7 +11,7 @@ import (
 
 // Task asks a deployment to invoke one named tool with an opaque input.
 type Task struct {
-	// ID identifies the task across producers and consumers. Producers
+	// ID identifies the task within its deployment. Submitters
 	// may leave it empty; the control plane assigns one on submission.
 	ID string `json:"id,omitempty"`
 	// Tool is the registered tool name to invoke.
