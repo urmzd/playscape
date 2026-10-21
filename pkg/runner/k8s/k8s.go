@@ -8,7 +8,7 @@
 //
 // Orthogonality boundary: this package owns the Job lifecycle only. It
 // needs RBAC to create Jobs and read pods and logs in one namespace (see
-// deploy/k8s/runner-rbac.yaml); network isolation is an optional
+// manifests/rbac.yaml in this module); network isolation is an optional
 // NetworkPolicy keyed on the IsolationLabel the executor sets.
 package k8s
 
@@ -36,7 +36,7 @@ const (
 	// RunLabel carries the run ID on the Job and its pod.
 	RunLabel = "playscape/run"
 	// IsolationLabel is set to "isolated" when Config.NetworkIsolated is
-	// true; deploy/k8s/runner-networkpolicy.yaml selects on it.
+	// true; manifests/networkpolicy.yaml selects on it.
 	IsolationLabel = "playscape/network"
 	// ContainerName is the run container's name inside the pod.
 	ContainerName = "run"

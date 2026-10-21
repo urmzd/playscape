@@ -1,13 +1,13 @@
 #!/bin/sh
-# install.sh — Installs playscape from GitHub releases.
+# install.sh: installs the playscape CLI (`playscape run`) from GitHub releases.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/urmzd/playscape/main/install.sh | sh
 #
 # Environment variables:
-#   PLAYSCAPE_VERSION     — version to install (default: latest)
-#   PLAYSCAPE_INSTALL_DIR — installation directory (default: $HOME/.local/bin)
-#   PLAYSCAPE_SHA256      — optional SHA256 checksum to verify against
+#   PLAYSCAPE_VERSION     : version to install (default: latest)
+#   PLAYSCAPE_INSTALL_DIR : installation directory (default: $HOME/.local/bin)
+#   PLAYSCAPE_SHA256      : optional SHA256 checksum to verify against
 
 set -eu
 

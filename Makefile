@@ -1,33 +1,34 @@
-.PHONY: all init build test lint fmt check run install record
+.PHONY: all init build install test vet lint fmt check record
 
-MOD := playscape
-CMD := cmd/$(MOD)
+# The root library (with the playscape CLI) and the Kubernetes runner, which
+# is its own module so importers of playscape do not inherit client-go.
+MODULES := . pkg/runner/k8s
 
 all: check
 
 init:
 	git config core.hooksPath .githooks
-	go mod download && go mod tidy
+	@for m in $(MODULES); do (cd $$m && go mod download && go mod tidy) || exit 1; done
 
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/$(MOD) ./$(CMD)
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/playscape ./cmd/playscape
+
+install:
+	CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" ./cmd/playscape
 
 test:
-	go test ./...
+	@for m in $(MODULES); do (cd $$m && go test -race ./...) || exit 1; done
+
+vet:
+	@for m in $(MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
 lint:
-	golangci-lint run
+	@for m in $(MODULES); do (cd $$m && golangci-lint run) || exit 1; done
 
 fmt:
 	gofmt -w .
 
-check: fmt lint test
-
-run: build
-	./bin/$(MOD) serve
-
-install:
-	CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" ./$(CMD)
+check: fmt vet lint test
 
 record:
 	teasr showme
