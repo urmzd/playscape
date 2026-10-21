@@ -78,6 +78,17 @@ func TestRunAppliesAllowedChangesAndReportsDenied(t *testing.T) {
 	}
 }
 
+func TestRunMakesGrantedAreasDirectories(t *testing.T) {
+	ws := t.TempDir()
+	code, _, stderr := runCLI(t, "run", "-workspace", ws, "-area", "out/reports", "echo r > out/reports/r")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if got, err := os.ReadFile(filepath.Join(ws, "out", "reports", "r")); err != nil || string(got) != "r\n" {
+		t.Fatalf("write into an empty granted area: %q, %v", got, err)
+	}
+}
+
 func TestRunReadOnlyAreaRefusesChanges(t *testing.T) {
 	ws := t.TempDir()
 	writeFile(t, filepath.Join(ws, "in", "a"), "v1")
@@ -133,7 +144,7 @@ func TestRunWithPolicyFileAndJSON(t *testing.T) {
 	}`)
 
 	code, stdout, _ := runCLI(t, "run", "-json", "-workspace", ws, "-policy", policy, "-as", "ci",
-		`mkdir out; echo x > out/x; ln -s /etc/hosts link; echo printed`)
+		`echo x > out/x; ln -s /etc/hosts link; echo printed`)
 	if code != exitDenied {
 		t.Fatalf("exit %d\n%s", code, stdout)
 	}

@@ -37,7 +37,8 @@ embedding the library would: a local workspace, a tool resolved by an
 in-process node, and an NGAC policy deciding every workspace operation.
 
 Before the command starts, every workspace file the policy lets it read is
-copied into a scratch directory, which is the command's working directory.
+copied into a scratch directory, which is the command's working directory,
+and each prefix the policy names exists there as a directory.
 The command's output streams as it runs. When it exits, each file it
 created, changed or removed there is applied to the workspace through the
 policy, and each change the policy refuses is reported as denied.
@@ -93,6 +94,7 @@ type runConfig struct {
 	user    string
 	dir     string
 	spec    controlplane.ServiceSpec
+	areas   []string // the prefixes the policy names, made directories in scratch
 	env     map[string]string
 	timeout time.Duration
 	json    bool
@@ -198,6 +200,11 @@ func parseRun(args []string, stderr io.Writer) (cfg runConfig, code int, ok bool
 			return usageErr("%v", err)
 		}
 		cfg.spec.Access = &spec
+		for _, oa := range spec.ObjectAttrs {
+			if oa.Prefix != "" {
+				cfg.areas = append(cfg.areas, oa.Prefix)
+			}
+		}
 	default:
 		p := sandbox.Policy{Tool: cfg.user}
 		for _, a := range areas {
@@ -210,6 +217,7 @@ func parseRun(args []string, stderr io.Writer) (cfg runConfig, code int, ok bool
 			if !workspace.ValidKey(a.Prefix) {
 				return usageErr("area %q is not a workspace key prefix (relative, slash-separated, no . or ..)", a.Prefix)
 			}
+			cfg.areas = append(cfg.areas, a.Prefix)
 		}
 		cfg.spec.Policies = []sandbox.Policy{p}
 	}
@@ -310,6 +318,11 @@ func stageAndRun(ctx context.Context, ws workspace.Workspace, cfg runConfig, out
 		rep.Staged = append(rep.Staged, k)
 	}
 	sort.Strings(rep.Staged)
+	for _, a := range cfg.areas {
+		// A convenience, not a grant: a prefix a staged file already
+		// occupies, or one outside the scratch directory, is left alone.
+		_ = root.MkdirAll(filepath.FromSlash(a), 0o755)
+	}
 
 	shell := []string{"/bin/sh", "-c"}
 	if runtime.GOOS == "windows" {
