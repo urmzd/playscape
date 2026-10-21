@@ -21,6 +21,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
       - name: Check formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -31,24 +32,48 @@ jobs:
           fi
 
   lint:
-    name: Lint
+    name: Lint (${{ matrix.module }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [".", "pkg/runner/k8s"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
       - uses: golangci/golangci-lint-action@v7
+        with:
+          working-directory: ${{ matrix.module }}
 
   test:
-    name: Test
+    name: Test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [".", "pkg/runner/k8s"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+      - run: go vet ./...
+        working-directory: ${{ matrix.module }}
+      - run: go test -race ./...
+        working-directory: ${{ matrix.module }}
+
+  examples:
+    name: Build saige example
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: examples/saige/go.mod
-      - run: go test ./...
-      - name: Build saige integration example
-        run: go build ./...
+          cache-dependency-path: "**/go.sum"
+      - run: go build ./...
         working-directory: examples/saige

@@ -31,7 +31,7 @@ func decodeManifest(t *testing.T, path string) []runtime.Object {
 	return objs
 }
 
-// TestRBACCoversExecutor keeps deploy/k8s/runner-rbac.yaml in step with the
+// TestRBACCoversExecutor keeps manifests/rbac.yaml in step with the
 // API calls Executor makes, and no broader.
 func TestRBACCoversExecutor(t *testing.T) {
 	want := map[string][]string{
@@ -40,7 +40,7 @@ func TestRBACCoversExecutor(t *testing.T) {
 		"/pods/log":  {"get"},
 	}
 	got := map[string][]string{}
-	for _, obj := range decodeManifest(t, "../../../deploy/k8s/runner-rbac.yaml") {
+	for _, obj := range decodeManifest(t, "manifests/rbac.yaml") {
 		role, ok := obj.(*rbacv1.Role)
 		if !ok {
 			continue
@@ -66,7 +66,7 @@ func TestRBACCoversExecutor(t *testing.T) {
 }
 
 func TestNetworkPolicySelectsIsolatedRuns(t *testing.T) {
-	objs := decodeManifest(t, "../../../deploy/k8s/runner-networkpolicy.yaml")
+	objs := decodeManifest(t, "manifests/networkpolicy.yaml")
 	np, ok := objs[0].(*networkingv1.NetworkPolicy)
 	if !ok {
 		t.Fatalf("got %T", objs[0])

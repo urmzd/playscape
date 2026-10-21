@@ -39,8 +39,8 @@ func (nopRecorder) Count(string, float64, ...Label)   {}
 func (nopRecorder) Gauge(string, float64, ...Label)   {}
 func (nopRecorder) Observe(string, float64, ...Label) {}
 
-// Memory is an in-process Recorder suitable for the beta single-binary
-// deployment and for tests. Distributions are kept as count and sum.
+// Memory is an in-process Recorder for development and tests.
+// Distributions are kept as count and sum.
 type Memory struct {
 	mu     sync.Mutex
 	values map[string]float64

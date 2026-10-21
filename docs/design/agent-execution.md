@@ -1,5 +1,13 @@
 # Agent Execution Design
 
+> **Superseded (October 2026).** playscape is now a library with no server,
+> no HTTP API and no queue of its own: tasks run on bounded in-process pools,
+> and durable, retried runs belong to anchor (see the
+> [ecosystem](https://github.com/urmzd/warp/blob/main/docs/ecosystem.md)).
+> The `dispatch` API, the worker wire, `playscape serve` and `playscape work`
+> below will not be built here. The draft is kept for its reasoning about
+> handoffs, environments and fencing.
+
 Status: draft (pre-implementation). This document defines the target abstractions
 for agent execution: delegation, handoffs, execution environments, event
 streaming, and the reduced API grammar. The current beta implements a subset

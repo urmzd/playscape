@@ -1,8 +1,7 @@
-// Package node defines the agent execution node: the unit that consumes
-// tasks and runs tools. The interfaces here say nothing about where a node
-// runs — an in-process goroutine today, a Kubernetes pod or serverless
-// container tomorrow — so the execution substrate can change without
-// touching the control plane or the queue.
+// Package node defines the agent execution node: the unit that runs tasks
+// by calling tools. The interfaces here say nothing about how a node runs
+// its tools (in process today), so the execution substrate can change
+// without touching the control plane.
 package node
 
 import (
@@ -35,9 +34,9 @@ type Node interface {
 }
 
 // Spawner submits a sub-task back into the node's deployment and returns its
-// task ID. The control plane injects it when creating nodes; locally it
-// enqueues in memory, remotely it posts to the control plane API. Tools only
-// reach it through their policy's spawn allowlist.
+// task ID. The control plane injects it when creating nodes, and it submits
+// to the same deployment's pool. Tools only reach it through their policy's
+// spawn allowlist.
 type Spawner func(ctx context.Context, t task.Task) (string, error)
 
 // Spec describes the nodes a Factory should produce for one deployment.
@@ -53,8 +52,8 @@ type Spec struct {
 	Spawn Spawner
 }
 
-// Factory creates nodes. Consumers call it when scaling out; it is the seam
-// where new execution substrates plug in.
+// Factory creates nodes. The control plane calls it when a deployment
+// grows; it is the seam where new execution substrates plug in.
 type Factory interface {
 	New(ctx context.Context, spec Spec) (Node, error)
 }

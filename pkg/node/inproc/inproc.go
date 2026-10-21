@@ -1,9 +1,7 @@
 // Package inproc provides an in-process node.Factory: each node executes
 // tools on the calling goroutine, resolving them from a shared registry and
 // confining each call through the deployment's policy decision point. It is
-// the execution substrate for both the single-binary control plane and the
-// `playscape work` consumer that Kubernetes or serverless containers scale
-// out.
+// the execution substrate controlplane.Memory runs its pools on.
 package inproc
 
 import (

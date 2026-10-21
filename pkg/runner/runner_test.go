@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,24 @@ func TestLocalRun(t *testing.T) {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("logs %q missing %q", logs.String(), want)
 		}
+	}
+}
+
+func TestLocalRunsInDir(t *testing.T) {
+	dir := t.TempDir()
+	var logs bytes.Buffer
+	res, err := Local{Dir: dir}.Run(context.Background(), Request{
+		Command: []string{"/bin/sh", "-c", "pwd; echo made > made.txt"},
+	}, &logs)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("run: %+v, %v (%s)", res, err, logs.String())
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "made.txt"))
+	if err != nil || string(got) != "made\n" {
+		t.Fatalf("file in Dir = %q, %v", got, err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("a caller's Dir must survive the run: %v", err)
 	}
 }
 

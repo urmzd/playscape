@@ -15,4 +15,4 @@ Please report vulnerabilities privately via [GitHub Security Advisories](https:/
 
 You can expect an acknowledgment within 72 hours. Once a fix is available, we will coordinate disclosure with you.
 
-The sandbox layer (`pkg/sandbox`) is a security boundary: any way for a tool to read or write workspace keys outside its policy's areas is a vulnerability, not a bug.
+The sandbox layer (`pkg/sandbox`) and the workspace (`pkg/workspace`) are a security boundary: any way for a tool to read or write workspace keys outside its policy's areas, or for a workspace key to reach a file outside the workspace directory, is a vulnerability, not a bug.

@@ -13,7 +13,7 @@
 //     attributes grouping agents, shared object attributes, multiple policy
 //     classes, and prohibitions.
 //
-// Either way, tools never receive the raw workspace — they get the view
+// Either way, tools never receive the raw workspace: they get the view
 // ScopePDP returns, and a tool nothing was granted to can do nothing.
 package sandbox
 
@@ -69,7 +69,7 @@ type Policy struct {
 	Tool string `json:"tool"`
 	// Areas are the prefixes the tool may access. Empty means deny all.
 	Areas []Area `json:"areas"`
-	// Spawn lists the tool names this tool may submit sub-tasks for —
+	// Spawn lists the tool names this tool may submit sub-tasks for:
 	// the self-referential path where an agent calls another agent (or
 	// itself). Empty means the tool cannot spawn anything.
 	Spawn []string `json:"spawn,omitempty"`
@@ -122,7 +122,7 @@ func must(err error) {
 	}
 }
 
-// Scope returns a view of ws restricted to policy p — the flat-policy
+// Scope returns a view of ws restricted to policy p, the flat-policy
 // shorthand for ScopePDP.
 func Scope(ws workspace.Workspace, p Policy) workspace.Workspace {
 	return ScopePDP(ws, p.Tool, FromPolicies([]Policy{p}))

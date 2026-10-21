@@ -28,3 +28,6 @@ packages:
   - path: .
     publish:
       type: go
+  - path: pkg/runner/k8s
+    publish:
+      type: go

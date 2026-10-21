@@ -100,7 +100,7 @@ func TestDeployScaleStatus(t *testing.T) {
 	}
 }
 
-func TestSubmitConsumesFromQueue(t *testing.T) {
+func TestSubmitRunsOnTheDeploymentsNodes(t *testing.T) {
 	ctx := context.Background()
 	plane, rec := newPlane(t)
 

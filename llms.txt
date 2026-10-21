@@ -1,24 +1,24 @@
 # playscape
 
-> Beta control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace. Execution is producer/consumer over per-deployment queues, so capacity scales by adding consumers (local goroutines, Kubernetes pods, or serverless containers running `playscape work`). Access is defined in an NGAC policy machine (NIST-style users, attributes, associations, prohibitions; flat per-tool policies compile into the same graph) and enforced by the sandbox with default deny, and agents can spawn sub-agents through policy-gated self-reference.
+> Beta Go library for where an agent's turn runs: sandboxed tools on bounded in-process pools of execution nodes, one shared workspace, and NGAC access control. A program composes it in code (`controlplane.NewMemory(inproc.NewFactory(registry, ws), recorder)`, then Deploy, Submit, SubmitAsync, Result); nothing in it listens on a port or reads configuration, and nothing is durable (retried runs belong to anchor). Access is defined in an NGAC policy machine (NIST-style users, attributes, associations, prohibitions; flat per-tool policies compile into the same graph) and enforced by the sandbox with default deny. The local workspace is confined to its directory with os.Root. Agents can spawn sub-agents through policy-gated self-reference.
 
-Go module `github.com/urmzd/playscape`; binary `playscape` with `serve` (control plane API) and `work` (remote consumer) commands.
+Go module `github.com/urmzd/playscape` (stdlib only). The Kubernetes Job runner is its own module, `github.com/urmzd/playscape/pkg/runner/k8s`. The `playscape` binary only validates a command in the sandbox: `playscape run [flags] COMMAND`.
 
 ## Documentation
 
-- [README](README.md): features, installation, quick start, Kubernetes scaling
-- [Architecture overview](docs/architecture/overview.md): package DAG, queue flow, sandbox model, roadmap
+- [README](README.md): features, installation, quick start, validating a command, limitations
+- [Architecture overview](docs/architecture/overview.md): package DAG, pools, sandbox model, workspace confinement, the CLI, roadmap
 - [AGENTS.md](AGENTS.md): AI-facing conventions, commands, extension guide
 - [Contributing](CONTRIBUTING.md): development workflow and commit convention
 
 ## Examples
 
-- [Basic](examples/basic/main.go): deploy, scale, submit, observe with a sandboxed tool
+- [Basic](examples/basic/main.go): deploy, size the pool, submit, observe with a sandboxed tool
 - [NGAC](examples/ngac/main.go): access as a policy graph with attribute grants, prohibitions, and spawn objects
 - [Saige agents](examples/saige/main.go): AI agents as workloads, including agent-spawns-agent
 
 ## Optional
 
-- [Kubernetes manifests](deploy/k8s/playscape.yaml): server + scalable worker fleet, validated on minikube
-- [Security policy](SECURITY.md): the sandbox is a security boundary
+- [Kubernetes runner manifests](pkg/runner/k8s/manifests/): RBAC and NetworkPolicy for the Job runner
+- [Security policy](SECURITY.md): the sandbox and the workspace are a security boundary
 - [Skills](skills/): portable agent skills for working in this repo

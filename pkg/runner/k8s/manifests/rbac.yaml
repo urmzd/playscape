@@ -1,8 +1,8 @@
-# RBAC for the Job-backed run executor (pkg/runner/k8s). Bind this service
-# account to the pod that embeds the executor (for example, set
-# `serviceAccountName: playscape-runner` on a worker Deployment that
-# registers a runner.Shell tool). Run pods themselves get no token:
-# the executor sets automountServiceAccountToken: false on every Job.
+# RBAC for the Job-backed run executor (module
+# github.com/urmzd/playscape/pkg/runner/k8s). Bind this service account to
+# the pod of the program that embeds the executor (set
+# `serviceAccountName: playscape-runner` on it). Run pods themselves get no
+# token: the executor sets automountServiceAccountToken: false on every Job.
 #
 # The Role is namespaced: the executor can only create and observe Jobs in
 # the namespace it is configured with. Apply it in that namespace.

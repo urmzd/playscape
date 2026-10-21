@@ -3,9 +3,9 @@
 // Each playscape task runs a saige agent inside a sandboxed tool. The agent's
 // answer is written to the tool's workspace area ("agents/..."); a write
 // outside that area is blocked by the sandbox. The deployment scales to
-// three competing consumer nodes, and the agent is self-referential: when
-// asked to delegate, it spawns a sub-task that another node picks up — an
-// agent calling an agent, gated by the policy's spawn allowlist.
+// three nodes, and the agent is self-referential: when asked to delegate,
+// it spawns a sub-task that another node picks up (an agent calling an
+// agent), gated by the policy's spawn allowlist.
 //
 // The agent uses saige's agenttest.ScriptedProvider, so no LLM backend or
 // API key is required. Swap in an Ollama/OpenAI/Anthropic provider for real
@@ -43,7 +43,7 @@ const delegatePrefix = "delegate:"
 // agentTool wraps a saige agent as a playscape tool. Each call constructs a
 // fresh agent (its own conversation tree), invokes it with the task input,
 // and persists the answer to the tool's sandboxed workspace area. Inputs
-// beginning with "delegate:" make the agent spawn a sub-task for the rest —
+// beginning with "delegate:" make the agent spawn a sub-task for the rest:
 // the self-referential path.
 func agentTool() tool.Tool {
 	return tool.Func("saige-agent", func(ctx context.Context, rt tool.Runtime, input []byte) ([]byte, error) {
@@ -81,7 +81,7 @@ func agentTool() tool.Tool {
 		if err := rt.Workspace().Write(ctx, key, bytes.NewReader([]byte(answer))); err != nil {
 			return nil, err
 		}
-		// Denied: outside the area — the sandbox stops the leak.
+		// Denied: outside the area, so the sandbox stops the leak.
 		if err := rt.Workspace().Write(ctx, "secrets/exfil", bytes.NewReader([]byte(answer))); err != nil {
 			fmt.Printf("sandbox blocked the leak: %v\n", err)
 		}
