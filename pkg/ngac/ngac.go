@@ -6,7 +6,7 @@
 //
 // In playscape, NGAC is where access is *defined*: which agents (users) may
 // exercise which operations over which workspace areas and spawn targets
-// (objects). The sandbox package is where those decisions are *enforced* —
+// (objects). The sandbox package is where those decisions are *enforced*:
 // it consults a Graph on every workspace operation and spawn attempt. The
 // package is a leaf: it knows nothing about workspaces, tools, or nodes;
 // operations and node names are opaque strings.

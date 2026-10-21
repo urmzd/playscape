@@ -43,7 +43,7 @@ const delegatePrefix = "delegate:"
 // agentTool wraps a saige agent as a playscape tool. Each call constructs a
 // fresh agent (its own conversation tree), invokes it with the task input,
 // and persists the answer to the tool's sandboxed workspace area. Inputs
-// beginning with "delegate:" make the agent spawn a sub-task for the rest —
+// beginning with "delegate:" make the agent spawn a sub-task for the rest:
 // the self-referential path.
 func agentTool() tool.Tool {
 	return tool.Func("saige-agent", func(ctx context.Context, rt tool.Runtime, input []byte) ([]byte, error) {
@@ -81,7 +81,7 @@ func agentTool() tool.Tool {
 		if err := rt.Workspace().Write(ctx, key, bytes.NewReader([]byte(answer))); err != nil {
 			return nil, err
 		}
-		// Denied: outside the area — the sandbox stops the leak.
+		// Denied: outside the area, so the sandbox stops the leak.
 		if err := rt.Workspace().Write(ctx, "secrets/exfil", bytes.NewReader([]byte(answer))); err != nil {
 			fmt.Printf("sandbox blocked the leak: %v\n", err)
 		}

@@ -19,13 +19,15 @@ make init
 ## Development
 
 ```sh
-make check   # fmt + lint + test (quality gate)
-make test    # go test ./...
+make check   # fmt + vet + lint + test (quality gate)
+make test    # go test -race in the root module and pkg/runner/k8s
 make fmt     # gofmt -w .
-make run     # build and run the server
+make build   # build the validation CLI into bin/playscape
 ```
 
-The sandbox (`pkg/sandbox`) is a security boundary: changes touching it must include tests that prove confinement still holds.
+The repository holds two modules: the root library and `pkg/runner/k8s` (kept apart so importers do not inherit client-go). `go test ./...` at the root does not reach the second; `make test` runs both.
+
+The sandbox (`pkg/sandbox`), the policy machine (`pkg/ngac`) and the workspace (`pkg/workspace`) are a security boundary: changes touching them must include tests that prove confinement still holds.
 
 ## Commit Convention
 

@@ -1,13 +1,13 @@
 <p align="center">
   <h1 align="center">playscape</h1>
   <p align="center">
-    Control plane for agent execution nodes: deploy one service, scale sandboxed agents with metrics on a shared workspace.
+    Where an agent's turn runs: sandboxed tools, one shared workspace, and NGAC access control, as a Go library.
     <br /><br />
-    <a href="https://github.com/urmzd/playscape/releases">Download</a>
+    <a href="https://pkg.go.dev/github.com/urmzd/playscape">Go Docs</a>
+    &middot;
+    <a href="https://github.com/urmzd/playscape/releases">CLI releases</a>
     &middot;
     <a href="https://github.com/urmzd/playscape/issues">Report Bug</a>
-    &middot;
-    <a href="https://pkg.go.dev/github.com/urmzd/playscape">Go Docs</a>
   </p>
 </p>
 
@@ -19,64 +19,56 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/urmzd/playscape" alt="License"></a>
 </p>
 
-> Formerly `dispatch`.
+> **Beta.** playscape is pre-1.0; its API may change between minor versions. See [Limitations](#limitations).
 
-> **Beta.** playscape is pre-1.0 and under active development. Interfaces are stabilizing but may change between minor versions; queues are in-memory (at-most-once delivery) and the shared workspace backend is a local directory. Durable brokers and GCS/S3 workspace backends are on the roadmap.
+playscape is a library first. A program composes it in code: a workspace, a
+tool registry, a node factory and a control plane, with an access policy
+per deployment. It starts no server and reads no configuration. The
+`playscape` CLI exists for one job: `playscape run` validates a command in
+the sandbox, so a person can see what a policy lets it read and change.
 
 ## Features
 
-- **Deploy a single service** and scale its agent execution nodes without changing it
-- **Producer/consumer execution**: tasks flow through a queue; scaling out is adding consumers, locally as goroutines or remotely as Kubernetes pods and serverless containers running `playscape work`
-- **Sandboxed tools**: every tool is locked to declared workspace areas and spawn targets; anything not granted is denied, so a compromised tool cannot leak outside its area
-- **NGAC access control**: access is defined in a NIST-style policy machine (users, attributes, associations, prohibitions) and enforced by the sandbox; flat per-tool policies compile into the same graph, full `access` specs express group grants and overriding denials
-- **Shared workspace**: all nodes read and write one storage backend, so state lives in exactly one place
-- **Self-referential agents**: a tool can spawn sub-tasks back into its own deployment (an agent calling another agent), gated by its policy
-- **Metrics built in**: node counts, task throughput, and latency recorded behind a transport-agnostic interface
-- **Orthogonal interfaces**: workspace, sandbox, tool, queue, node, and control plane compose without knowing about each other
+- **Sandboxed tools**: every tool sees the workspace only through a view its policy grants; anything not granted is denied, so a misbehaving tool cannot read or write outside its areas
+- **NGAC access control**: access is defined in a NIST-style policy machine (users, attributes, associations, prohibitions) and enforced by the sandbox; flat per-tool policies compile into the same graph
+- **Bounded in-process pools**: each deployment runs its tasks on a fixed number of nodes, one task per node at a time, with a bounded backlog; resizing never cancels work
+- **Shared workspace**: every node reads and writes one backend; the local backend is confined to its directory with `os.Root`, so a symbolic link cannot lead a key outside it
+- **Self-referential agents**: a tool can spawn sub-tasks into its own deployment (an agent calling another agent), gated by its policy
+- **Command runners**: `runner.Shell` turns an executor into a tool; `pkg/runner/k8s`, a module of its own, runs each call as one locked-down Kubernetes Job
+- **CLI tools**: the `cli` provider wraps a binary behind a fixed argv template, an environment allowlist, a timeout and output caps
+- **Metrics seam**: node counts, backlog, throughput and latency recorded behind a transport-agnostic `metrics.Recorder`
 
 ## Installation
 
-### Script (macOS / Linux)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/urmzd/playscape/main/install.sh | sh
-```
-
-### Manual
-
-Download a pre-built binary from the [releases page](https://github.com/urmzd/playscape/releases/latest).
-
-### Go SDK
+The library has no dependencies outside the Go standard library:
 
 ```sh
 go get github.com/urmzd/playscape
 ```
 
-## Quick Start
-
-Run the control plane and exercise it with the built-in sandboxed `echo` tool:
+The Kubernetes Job runner is a separate module, so only programs that use it inherit client-go:
 
 ```sh
-playscape serve &
-
-curl -X POST localhost:8484/v1/deployments \
-  -d '{"name":"echo-service","replicas":3,"policies":[{"tool":"echo","areas":[{"prefix":"echo"}]}]}'
-
-curl -X POST localhost:8484/v1/deployments/echo-service/tasks \
-  -d '{"tool":"echo","input":"hello"}'
-
-curl -X POST localhost:8484/v1/deployments/echo-service/scale -d '{"replicas":10}'
-
-curl localhost:8484/metrics
+go get github.com/urmzd/playscape/pkg/runner/k8s
 ```
 
-Or compose the same thing in Go:
+The CLI, for validating commands:
+
+```sh
+go install github.com/urmzd/playscape/cmd/playscape@latest
+# or a release binary (macOS, Linux)
+curl -fsSL https://raw.githubusercontent.com/urmzd/playscape/main/install.sh | sh
+```
+
+## Quick Start
+
+Compose a control plane from its pieces, deploy one service with a policy, and submit tasks to it:
 
 <!-- fsrc src="examples/basic/main.go" fence="auto" -->
 ```go
 // Basic example: compose a control plane from the orthogonal pieces
 // (a local workspace, a sandboxed tool, an in-process node factory, and an
-// in-memory metrics recorder), then deploy a service, scale it out, submit
+// in-memory metrics recorder), then deploy a service, size its pool, submit
 // tasks, and print the resulting metrics.
 //
 // Prerequisites: none. Run with:
@@ -145,7 +137,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Scale out; submitted tasks are consumed by competing nodes.
+	// Grow the pool to three nodes; each runs one task at a time.
 	if err := plane.Scale(ctx, "greeter", 3); err != nil {
 		log.Fatal(err)
 	}
@@ -172,35 +164,76 @@ func main() {
 ```
 <!-- /fsrc -->
 
-See [`examples/`](examples/) for more.
+`Submit` blocks until the task's result arrives; `SubmitAsync` returns its ID for `Result` to poll. A deployment's `Replicas` is how many of its tasks run at once; further tasks wait in its backlog for a free node.
 
-## Scaling on Kubernetes
+## Validating a command
 
-Execution scales by replicating consumers, not by touching the control plane. The reference manifests deploy one `playscape serve` service and a fleet of `playscape work` pods that lease tasks from it over HTTP:
+`playscape run` runs one command the way a program embedding the library would: a local workspace, a tool resolved by an in-process node, and an NGAC policy deciding every workspace operation. Files the policy lets the command read are copied into a scratch directory, its output streams as it runs, and each file it creates, changes or removes is applied back to the workspace through the policy:
 
-```sh
-minikube start
-eval $(minikube docker-env) && docker build -t playscape:dev .
-kubectl apply -f deploy/k8s/playscape.yaml
-
-kubectl scale deployment/playscape-worker --replicas=10
+```console
+$ playscape run -workspace ./ws -read src -area out 'wc -l src/*.go > out/lines; echo x > notes'
+playscape: ran as "run" for 4ms
+playscape: staged 3 file(s) the policy lets "run" read
+playscape: wrote out/lines
+playscape: DENIED write notes (sandbox: access denied by policy: user "run", op write, key "notes")
+playscape: command exited 0, but the policy DENIED 1 change(s)
+$ echo $?
+77
 ```
 
-Deploy a service with `"replicas": -1` (no local nodes) and every task is executed by the worker fleet. An HPA on queue or task metrics gives the same effect for serverless-style autoscaling.
+| Flag | Meaning |
+|------|---------|
+| `-workspace DIR` | workspace directory (default: a temporary one, removed afterwards) |
+| `-area PREFIX` / `-read PREFIX` | grant read and write, or read only, on a key prefix (repeatable) |
+| `-policy FILE` | a full NGAC policy (`ngac.Spec` as JSON) instead of `-area`/`-read`; `-as` names the user |
+| `-env NAME`, `-env NAME=VALUE` | pass a host variable through, or set one; nothing else is inherited except `PATH` |
+| `-timeout DUR` | how long the command may run (default 5m) |
+| `-json` | print one JSON report on stdout, with the output captured in it |
+
+The exit status is the command's own, or 77 when it succeeded but a change was denied, 124 on timeout, 125 when it could not run, 130 when interrupted. The command is a host process with your privileges: the policy decides what it sees of the workspace and what it may change there, not what it can reach on the machine.
+
+## Sandboxed shell on Kubernetes
+
+```go
+exec, err := k8s.New(clientset, k8s.Config{Namespace: "runs", Image: "alpine:3.20", NetworkIsolated: true})
+if err != nil {
+	return err
+}
+if err := registry.Register(runner.Shell("shell", exec, runner.ShellConfig{Timeout: time.Minute})); err != nil {
+	return err
+}
+```
+
+Each call becomes one batch/v1 Job: non-root, no privilege escalation, all capabilities dropped, read-only root filesystem, size-limited scratch, CPU and memory limits, no service-account token, an active deadline and TTL cleanup. The program embedding the executor needs [`manifests/rbac.yaml`](pkg/runner/k8s/manifests/rbac.yaml); [`manifests/networkpolicy.yaml`](pkg/runner/k8s/manifests/networkpolicy.yaml) optionally denies all traffic to isolated runs.
 
 ## Examples
 
 | Example | Description |
 |---------|-------------|
-| [`basic`](examples/basic/) | Deploy, scale, submit, and observe with a sandboxed tool |
+| [`basic`](examples/basic/) | Deploy, size the pool, submit, and observe with a sandboxed tool |
 | [`ngac`](examples/ngac/) | Define access as an NGAC policy graph: attribute grants, prohibitions, spawn objects |
-| [`saige`](examples/saige/) | Run [saige](https://github.com/urmzd/saige) AI agents as workloads, including an agent spawning a sub-agent |
+| [`saige`](examples/saige/) | Run [saige](https://github.com/urmzd/saige) agents as workloads, including an agent spawning a sub-agent |
 
 ## Architecture
 
-Tasks are produced onto per-deployment queues and executed by competing consumers. Each consumer is a node that resolves tools from a registry and confines every call through the deployment's NGAC policy graph: the executing tool is the policy-machine user, workspace keys and spawn targets are the objects, and the default is deny. The packages form a strict one-way dependency graph so each concern can change independently.
+A deployment is a pool of nodes. Each node resolves tools from a registry and confines every call through the deployment's NGAC policy graph: the executing tool is the policy-machine user, workspace keys and spawn targets are the objects, and the default is deny. The packages form a strict one-way dependency graph so each concern can change independently.
 
 See [docs/architecture/overview.md](docs/architecture/overview.md) for the full architecture guide.
+
+## Limitations
+
+- **Pre-1.0.** The API may change between minor versions.
+- **Nothing is durable.** A task lives as long as the process that accepted it. Retried, replayable runs are the caller's job: in the stack, anchor runs wrap playscape tasks.
+- **No per-task cancel.** Ending the context given to `Submit` stops the wait, not the task; `Close` cancels every running task at once.
+- **Waiting on your own deployment can deadlock.** A tool that blocks on a sub-task it spawned holds its node; if every node waits, nothing runs. Size `Replicas` for it, or run sub-tasks on the parent's node.
+- **Results are kept up to a bound** (1024 per deployment by default); `Result` reports `ErrUnknownTask` for one that has been forgotten.
+- **One workspace backend**: a local directory. GCS and S3 backends are not written.
+- **The workspace policy is not process isolation.** It confines what a tool reaches through the workspace. The `cli` provider, `runner.Local` and `playscape run` start host processes with the caller's privileges; isolation needs `pkg/runner/k8s`.
+- **Kubernetes runs** see no shared workspace (scratch only), stdout and stderr arrive as one stream, and status is polled, not watched.
+- **The CLI** runs commands with `runner.Local` only, shows stdout and stderr as one stream, and stages every readable file before a run.
+- **Metrics** have an in-memory recorder only; there is no exporter yet.
+
+Limitations across the whole stack are listed in [the ecosystem](https://github.com/urmzd/warp/blob/main/docs/ecosystem.md#limitations-in-one-place).
 
 ## Agent Skill
 
@@ -211,8 +244,8 @@ This repo's conventions are available as portable agent skills in [`skills/`](sk
 playscape is the second of five layers (warp, fiber, saige, playscape,
 anchor): where an agent's turn runs, and what it may touch. It builds on
 anchor and is built on by saige and fiber, which run their commands and file
-access through it. Its server, CLI and queue are being retired so it is a
-library chosen in code, like the rest of the stack below warp. [The
+access through it. It is a library chosen in code, like the rest of the
+stack below warp: no server, no queue of its own. [The
 ecosystem](https://github.com/urmzd/warp/blob/main/docs/ecosystem.md) lists who owns what, the remaining duplication and the
 stack's limitations in one place.
 
