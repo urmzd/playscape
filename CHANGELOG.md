@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 (2026-10-21)
+
+### Bug Fixes
+
+- **k8s**: require playscape v0.7.0, the first release without the package (#13) ([7c9297a](https://github.com/urmzd/playscape/commit/7c9297af1bf20521bd9b5c21fb4afe347b69209e))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.7.0...v0.7.1)
+
+
 ## 0.7.0 (2026-10-21)
 
 ### Breaking
