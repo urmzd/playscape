@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 (2026-10-21)
+
+### Breaking
+
+- playscape is a library with a playscape run CLI; the server and its queue are gone (#12) ([7ff97a4](https://github.com/urmzd/playscape/commit/7ff97a4a36f9fee2b5ad4f2b72865bfea543f8fb))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.6.1...v0.7.0)
+
+
 ## 0.6.1 (2026-10-20)
 
 ### Bug Fixes
