@@ -102,7 +102,7 @@ Components record through `metrics.Recorder` (counters, gauges, distributions) a
 | `playscape_tasks_total{deployment,tool,status}` | tasks finished, `ok` or `error` |
 | `playscape_task_seconds_{count,sum}{deployment,tool}` | execution latency |
 
-A Prometheus or OpenTelemetry recorder replaces the in-memory one without any caller changing; in the stack, warp is to build the providers.
+A Prometheus or OpenTelemetry recorder replaces the in-memory one without any caller changing; in the stack, Humagen is to build the providers.
 
 ## Workspace Backends
 
@@ -120,11 +120,11 @@ It opens no listener and exits with the command. It is not isolation: `runner.Lo
 
 - `make test` race-tests both modules: sandbox confinement (traversal, list-leak), workspace confinement (symlink escapes through linked directories and files), NGAC semantics (attribute inheritance, multi-policy-class conjunction, prohibition override), the pools (bounded concurrency, FIFO backlog, `ErrFull`, drain on scale-down, retention, `Close`), policy-gated spawning, the Job runner against a fake clientset, and the CLI end to end.
 - `examples/saige/` runs real [saige](https://github.com/urmzd/saige) agents as workloads, including an agent delegating to a sub-agent.
-- fiber's sandbox and warp's platform build on `controlplane.NewMemory` and are built against each change.
+- fiber's sandbox and Humagen's platform build on `controlplane.NewMemory` and are built against each change.
 
 ## Roadmap
 
 - GCS/S3 workspace backends behind `workspace.Workspace`
-- An OpenTelemetry recorder for `metrics.Recorder`, built by warp
+- An OpenTelemetry recorder for `metrics.Recorder`, built by Humagen
 - Container-per-node execution substrate behind `node.Factory`
 - Commands from saige run through `runner.Executor` (ecosystem step 15)
