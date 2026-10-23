@@ -233,7 +233,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 - **The CLI** runs commands with `runner.Local` only, shows stdout and stderr as one stream, and stages every readable file before a run.
 - **Metrics** have an in-memory recorder only; there is no exporter yet.
 
-Limitations across the whole stack are listed in [the ecosystem](https://github.com/urmzd/warp/blob/main/docs/ecosystem.md#limitations-in-one-place).
+Limitations across the whole stack are listed in [the ecosystem](https://github.com/urmzd/humagen/blob/main/docs/ecosystem.md#limitations-in-one-place).
 
 ## Agent Skill
 
@@ -241,13 +241,17 @@ This repo's conventions are available as portable agent skills in [`skills/`](sk
 
 ## Where this sits
 
-playscape is the second of five layers (warp, fiber, saige, playscape,
+playscape is the second of five layers (Humagen, fiber, saige, playscape,
 anchor): where an agent's turn runs, and what it may touch. It builds on
 anchor and is built on by saige and fiber, which run their commands and file
 access through it. It is a library chosen in code, like the rest of the
-stack below warp: no server, no queue of its own. [The
-ecosystem](https://github.com/urmzd/warp/blob/main/docs/ecosystem.md) lists who owns what, the remaining duplication and the
+stack below Humagen: no server, no queue of its own. [The
+ecosystem](https://github.com/urmzd/humagen/blob/main/docs/ecosystem.md) lists who owns what, the remaining duplication and the
 stack's limitations in one place.
+
+For existing Warp deployments of [Humagen](https://github.com/urmzd/humagen),
+see the [upgrade guide](https://github.com/urmzd/humagen/blob/main/docs/upgrading-from-warp.md).
+
 
 ## License
 
