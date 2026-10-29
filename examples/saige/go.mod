@@ -12,5 +12,5 @@ require (
 require (
 	github.com/dslipak/pdf v0.0.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 )
