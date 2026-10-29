@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.2 (2026-10-29)
+
+### .
+
+### pkg/runner/k8s
+
+#### Bug Fixes
+
+- **deps**: patch vulnerable Go dependencies (#16) ([6f303fa](https://github.com/urmzd/playscape/commit/6f303fab274e6c6b869d3fb786c13e13c2098dbc))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.7.1...v0.7.2)
+
+
 ## 0.7.1 (2026-10-21)
 
 ### Bug Fixes
