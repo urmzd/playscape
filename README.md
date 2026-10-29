@@ -239,7 +239,7 @@ make build    # writes bin/playscape
 ## Documentation
 
 - [Architecture overview](docs/architecture/overview.md)
-- [Agent execution design](docs/design/agent-execution.md)
+- [Agent execution design](docs/rfcs/0001-agent-execution.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 
