@@ -12,6 +12,7 @@ A program composes the pieces in code: `controlplane.NewMemory(inproc.NewFactory
 - `pkg/tool` defines the capability unit, the `Runtime` it executes against, and `Provider` (a family of tools of one `Kind`); `pkg/tool/cli` is the `cli` provider kind wrapping CLI binaries
 - `pkg/runner` is the run executor seam (`Executor`: run one command, stream logs, report the exit code; `Local` for dev/tests, `Shell` adapts an executor into a tool). Process isolation lives here, not in `pkg/sandbox`
 - `pkg/runner/k8s` is its own Go module (`github.com/urmzd/playscape/pkg/runner/k8s`, so only its importers get client-go): one restricted batch/v1 Job per run; the RBAC and NetworkPolicy it needs are in `pkg/runner/k8s/manifests`
+- `pkg/isolate` is where a run's tools execute: `Driver` starts an `Instance` from a `Spec` (zero value is the strictest: no network, read-only root, non-root, default limits), `Pool` keeps them warm and leases each to one run, never reused, and `Executor` adapts an instance into a `runner.Executor`. `isolate/docker` drives the docker CLI (runc or runsc); `isolate/local` has no isolation and is for tests; `isolate/isolatetest` is the conformance suite every driver runs
 - `pkg/node` + `pkg/node/inproc` define and implement the execution substrate
 - `pkg/controlplane` is the composition root and owns the pools
 - `cmd/playscape` is the validation CLI: stdlib `flag`, `run` and `version`, no listener
@@ -45,7 +46,7 @@ Full guide: `docs/architecture/overview.md`. Discover layout with `tree` or ripg
 ## Rules
 
 - Nothing in the library is a service: no listener, no reading files, environment variables or URLs to decide what to build. Backends are chosen in code. The CLI may read its own flags and a policy file; it must never start a server.
-- `pkg/sandbox`, `pkg/ngac` and `pkg/workspace` are a security boundary. Any change near them needs tests proving confinement still holds (traversal, symlink escapes, sibling prefixes, list-leak, spawn gating, prohibition override, multi-policy-class conjunction). Default is always deny.
+- `pkg/sandbox`, `pkg/ngac`, `pkg/workspace` and `pkg/isolate` are a security boundary. A driver never starts an instance weaker than its spec (`ErrUnsupported` instead). Any change near them needs tests proving confinement still holds (traversal, symlink escapes, sibling prefixes, list-leak, spawn gating, prohibition override, multi-policy-class conjunction). Default is always deny.
 - Preserve the dependency DAG: nothing under `pkg/` may import `pkg/controlplane`; leaves stay stdlib-only.
 - New backends implement existing interfaces (`workspace.Workspace`, `node.Factory`, `runner.Executor`, `metrics.Recorder`); do not widen interfaces for one backend's needs.
 - Do not add a durable queue here. Durability is anchor's; the control plane runs tasks in process and says so.
@@ -57,6 +58,7 @@ Full guide: `docs/architecture/overview.md`. Discover layout with `tree` or ripg
 
 - **New CLI-backed tools**: declare `cli.Spec`s (binary, argv template, env allowlist, timeout, output caps) and `registry.RegisterProvider(cli.New(specs...))`. The binary is not confined by the workspace policy; see the architecture caveat.
 - **Sandboxed shell**: `runner.Shell(name, k8s.New(clientset, cfg), shellCfg)` registers a tool that runs each call as one Kubernetes Job; apply `pkg/runner/k8s/manifests/rbac.yaml` (and optionally `networkpolicy.yaml`) in the run namespace. New isolation backends implement `runner.Executor`.
+- **Isolated runs**: `pool.Lease(ctx, isolate.Spec{...})` per run, `runner.Shell(name, isolate.Executor{Instance: lease}, cfg)`, and `lease.Release(ctx)` at the end. New isolation backends implement `isolate.Driver` and must pass `isolatetest.Run` with `Isolated: true`.
 - **New tool**: implement `tool.Tool` (or `tool.Func`), register it, and grant it access in the `ServiceSpec`: a flat `sandbox.Policy`, or an `ngac.Spec` under `Access` for relational grants (user attributes, prohibitions). No grant means no workspace access and no spawning.
 - **New workspace backend** (GCS/S3): implement `workspace.Workspace` in `pkg/workspace/<backend>.go`; validate keys with `workspace.ValidKey`.
 - **New execution substrate** (containers): implement `node.Factory`/`node.Node`; the control plane needs no changes.
