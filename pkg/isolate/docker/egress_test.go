@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,7 +98,10 @@ func TestEgressThroughTheGate(t *testing.T) {
 	if _, err := d0.Start(context.Background(), isolate.Spec{Image: opts.Image, Network: isolate.Network{Proxy: "gate:3128"}}); err == nil {
 		t.Fatal("a driver with no egress network started an instance with a proxy")
 	}
-	d, err := New(Config{WorkRoot: d0.workRoot, EgressNetwork: sandboxNet})
+	d, err := New(Config{
+		WorkRoot: d0.workRoot, EgressNetwork: sandboxNet, Runtime: d0.runtime,
+		InsecureDevelopmentRuntime: !sandboxRuntimes[d0.runtime], Log: io.Discard,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
