@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.0 (2026-10-30)
+
+### Breaking
+
+- **isolate**: require gVisor and a stricter seccomp profile in the docker driver (#19) ([a55543f](https://github.com/urmzd/playscape/commit/a55543f8389adfc55db104a0948ca00a2c83045a))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.9.0...v0.10.0)
+
+
 ## 0.9.0 (2026-10-30)
 
 ### Features
