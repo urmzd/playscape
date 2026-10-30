@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 (2026-10-30)
+
+### Features
+
+- **isolate**: add the egress gate with credential injection (#18) ([b901f25](https://github.com/urmzd/playscape/commit/b901f2514212952c4228bc4176de6ef7aedd973e))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.8.0...v0.9.0)
+
+
 ## 0.8.0 (2026-10-30)
 
 ### Features
