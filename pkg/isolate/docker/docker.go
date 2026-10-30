@@ -1,11 +1,14 @@
 // Package docker is an isolate.Driver that runs each instance as Docker
 // containers, driven through the docker CLI (no SDK dependency). The
-// runtime is selectable: runc (the default) isolates with namespaces,
-// cgroups, seccomp and no capabilities; runsc (gVisor) adds a user-space
-// kernel per instance and is the one to use for code you do not trust.
+// runtime is runsc (gVisor) unless the program opts into another: gVisor
+// puts a user-space kernel between each instance and the host, which is
+// the boundary for code you do not trust. runc shares the host kernel and
+// isolates only with namespaces, cgroups, seccomp and no capabilities, so
+// New accepts it only with Config.InsecureDevelopmentRuntime.
 //
 // Every container starts with no network (--network none), a read-only
-// root filesystem, all capabilities dropped, no-new-privileges, a non-root
+// root filesystem, all capabilities dropped, no-new-privileges, a seccomp
+// profile stricter than Docker's default (see deniedSyscalls), a non-root
 // user, and CPU, memory (no swap), process and scratch-disk limits. The
 // scratch directory /tmp is a size-limited tmpfs. The work directory is a
 // host directory bind-mounted at /work, so Files reads and writes it
@@ -48,11 +51,21 @@ import (
 )
 
 // Runtimes the driver knows by name. Any other OCI runtime registered with
-// the daemon can be named in Config.Runtime too.
+// the daemon can be named in Config.Runtime too, with
+// Config.InsecureDevelopmentRuntime.
 const (
 	RuntimeRunc   = "runc"
 	RuntimeGVisor = "runsc"
 )
+
+// sandboxRuntimes are the runtimes that give each container a kernel of its
+// own, so New accepts them without InsecureDevelopmentRuntime. A microVM
+// runtime joins this set once the conformance suite runs against it in CI.
+var sandboxRuntimes = map[string]bool{RuntimeGVisor: true}
+
+// ErrInsecureRuntime is returned by New for a runtime that shares the host
+// kernel when Config.InsecureDevelopmentRuntime is not set.
+var ErrInsecureRuntime = errors.New("isolate: docker: the runtime shares the host kernel")
 
 // DefaultUser is the user containers run as when the spec names none and
 // the host program runs as root. Otherwise the default is the host
@@ -78,12 +91,23 @@ type Config struct {
 	// Binary is the docker CLI; empty means "docker" on PATH.
 	Binary string
 	// Runtime is the OCI runtime for every container; empty means
-	// RuntimeRunc.
+	// RuntimeGVisor, which the daemon must have registered.
 	Runtime string
+	// InsecureDevelopmentRuntime lets New accept a runtime that shares the
+	// host kernel, such as RuntimeRunc. A kernel bug is then a way out of
+	// every instance. Set it only where the code that runs is your own:
+	// development machines without gVisor, and tests. New warns on Log
+	// when it is set.
+	InsecureDevelopmentRuntime bool
+	// Log receives New's warning about an insecure runtime; nil means
+	// os.Stderr.
+	Log io.Writer
 	// WorkRoot is the host directory instance work directories are
 	// created in; empty means the system temporary directory. The Docker
 	// daemon must be able to bind-mount it: with Docker Desktop or Colima
-	// that means a directory shared with the VM.
+	// that means a directory shared with the VM. The driver does not
+	// limit how much a run writes there; give WorkRoot a filesystem of
+	// its own so a run cannot fill the host's disk.
 	WorkRoot string
 	// IdleCommand keeps a container running between commands; empty
 	// means ["sleep", "infinity"]. The image must have it.
@@ -116,18 +140,28 @@ var runtimeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // New returns a driver. It finds the CLI but does not contact the daemon.
 func New(cfg Config) (*Driver, error) {
+	if cfg.Runtime == "" {
+		cfg.Runtime = RuntimeGVisor
+	}
+	if !runtimeName.MatchString(cfg.Runtime) {
+		return nil, fmt.Errorf("isolate: docker: runtime %q", cfg.Runtime)
+	}
+	if !sandboxRuntimes[cfg.Runtime] {
+		if !cfg.InsecureDevelopmentRuntime {
+			return nil, fmt.Errorf("%w: %q (use %q, or set InsecureDevelopmentRuntime for development)", ErrInsecureRuntime, cfg.Runtime, RuntimeGVisor)
+		}
+		log := cfg.Log
+		if log == nil {
+			log = os.Stderr
+		}
+		fmt.Fprintf(log, "playscape: isolate/docker: runtime %q shares the host kernel: instances are NOT a boundary for untrusted code (InsecureDevelopmentRuntime is set)\n", cfg.Runtime)
+	}
 	if cfg.Binary == "" {
 		cfg.Binary = "docker"
 	}
 	bin, err := exec.LookPath(cfg.Binary)
 	if err != nil {
 		return nil, fmt.Errorf("isolate: docker: %w", err)
-	}
-	if cfg.Runtime == "" {
-		cfg.Runtime = RuntimeRunc
-	}
-	if !runtimeName.MatchString(cfg.Runtime) {
-		return nil, fmt.Errorf("isolate: docker: runtime %q", cfg.Runtime)
 	}
 	if cfg.WorkRoot == "" {
 		cfg.WorkRoot = os.TempDir()
@@ -305,6 +339,7 @@ func (d *Driver) runArgs(id string, c container, labels map[string]string) []str
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
+		"--security-opt", "seccomp=/dev/stdin", // seccompProfile, on stdin
 		"--user", c.user,
 		"--pids-limit", strconv.FormatInt(r.PIDs, 10),
 		"--memory", strconv.FormatInt(r.MemoryBytes, 10),
@@ -406,11 +441,11 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 		name: i.workload, compartment: isolate.Workload, image: spec.Image,
 		user: user, resources: spec.Resources, network: i.d.network(spec.Network), workDir: isolate.WorkDir, mounts: mounts,
 	}
-	if _, err := i.d.cli(ctx, nil, i.d.runArgs(i.id, workload, spec.Labels)...); err != nil {
+	if _, err := i.d.run(ctx, i.d.runArgs(i.id, workload, spec.Labels)); err != nil {
 		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
 	}
 	if i.connectors != "" {
-		if _, err := i.d.cli(ctx, nil, i.d.runArgs(i.id, connector, spec.Labels)...); err != nil {
+		if _, err := i.d.run(ctx, i.d.runArgs(i.id, connector, spec.Labels)); err != nil {
 			return fmt.Errorf("%w: docker: connectors: %w", isolate.ErrStart, err)
 		}
 	}
@@ -422,11 +457,23 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 	return nil
 }
 
+// run runs docker run with args from runArgs, which read the seccomp
+// profile from standard input.
+func (d *Driver) run(ctx context.Context, args []string) ([]byte, error) {
+	return d.cliIn(ctx, bytes.NewReader(seccompProfile), nil, args...)
+}
+
 // cli runs the docker CLI with args and returns its stdout. extraEnv is
 // added to the CLI's environment. A failure carries the CLI's stderr.
 func (d *Driver) cli(ctx context.Context, extraEnv []string, args ...string) ([]byte, error) {
+	return d.cliIn(ctx, nil, extraEnv, args...)
+}
+
+// cliIn is cli with stdin as the CLI's standard input.
+func (d *Driver) cliIn(ctx context.Context, stdin io.Reader, extraEnv []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 	cmd.Env = append(append([]string{}, d.env...), extraEnv...)
+	cmd.Stdin = stdin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

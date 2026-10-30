@@ -1,11 +1,13 @@
 // Package isolatetest is the conformance suite every isolate.Driver runs:
 // the behavior an Instance promises whatever enforces it, and, for drivers
 // that isolate, the boundary itself (read-only root and project, no
-// network, a non-root user with no capabilities, resource limits, and
-// compartments that share only the socket directory).
+// network, a non-root user with no capabilities, resource limits, syscalls
+// a workload has no use for failing with EPERM, and compartments that
+// share only the socket directory).
 //
-// Commands are POSIX shell; the compartment checks also need python3 for
-// unix sockets and are skipped where it is missing.
+// Commands are POSIX shell; the compartment and syscall checks also need
+// python3 (unix sockets, raw syscalls through ctypes) and are skipped where
+// it is missing. The syscall checks know x86_64 and aarch64.
 package isolatetest
 
 import (
@@ -366,5 +368,60 @@ func (s suite) boundary(t *testing.T) {
 		if r := s.sh(inst, c.script); r.err != nil || r.code != 0 {
 			t.Errorf("%s: %q: exit %d, err %v, stderr %q", c.name, c.script, r.code, r.err, r.stderr)
 		}
+	}
+	t.Run("DeniedSyscalls", func(t *testing.T) { s.deniedSyscalls(t, inst) })
+}
+
+// syscalls calls each syscall a workload is denied, with arguments that
+// would not fail with EPERM were it allowed where that is possible (ptrace
+// TRACEME, process_vm_readv of itself and personality succeed; most others
+// would fail with EFAULT or EBADF), and prints every one that did not fail
+// with EPERM. Numbers are x86_64 and aarch64 (the generic table).
+const syscalls = `
+import ctypes, errno, os, platform, sys
+nr = {
+    "ptrace": (101, 117), "process_vm_readv": (310, 270), "kcmp": (312, 272),
+    "unshare": (272, 97), "setns": (308, 268), "mount": (165, 40),
+    "umount2": (166, 39), "pivot_root": (155, 41), "bpf": (321, 280),
+    "keyctl": (250, 219), "add_key": (248, 217), "request_key": (249, 218),
+    "perf_event_open": (298, 241), "userfaultfd": (323, 282),
+    "kexec_load": (246, 104), "init_module": (175, 105),
+    "finit_module": (313, 273), "delete_module": (176, 106),
+    "open_by_handle_at": (304, 265), "name_to_handle_at": (303, 264),
+    "swapon": (167, 224), "swapoff": (168, 225), "reboot": (169, 142),
+    "acct": (163, 89), "personality": (135, 92),
+}
+args = {
+    "ptrace": (0, 0, 0, 0), "process_vm_readv": (os.getpid(), 0, 0, 0, 0, 0),
+    "kcmp": (os.getpid(), os.getpid(), 0, 0, 0), "unshare": (0x10000000,),
+    "setns": (-1, 0), "keyctl": (0, -3, 0), "perf_event_open": (0, 0, -1, -1, 0),
+    "finit_module": (-1, 0, 0), "open_by_handle_at": (-1, 0, 0),
+    "name_to_handle_at": (-1, 0, 0, 0, 0), "personality": (0x0040000,),
+}
+arch = {"x86_64": 0, "aarch64": 1}.get(platform.machine())
+if arch is None:
+    print("unknown machine " + platform.machine())
+    sys.exit(2)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+bad = []
+for name, n in sorted(nr.items()):
+    ctypes.set_errno(0)
+    a = [ctypes.c_long(v) for v in args.get(name, (0, 0, 0, 0, 0))]
+    rc = libc.syscall(ctypes.c_long(n[arch]), *a)
+    e = ctypes.get_errno()
+    if rc != -1 or e != errno.EPERM:
+        bad.append("%s=%d/%s" % (name, rc, errno.errorcode.get(e, e)))
+print(" ".join(bad))
+sys.exit(1 if bad else 0)
+`
+
+func (s suite) deniedSyscalls(t *testing.T, inst isolate.Instance) {
+	if r := s.sh(inst, "command -v python3"); r.err != nil || r.code != 0 {
+		t.Skip("python3 is not in the image")
+	}
+	r := s.sh(inst, "exec python3 -c '"+syscalls+"'")
+	if r.err != nil || r.code != 0 {
+		t.Errorf("syscalls not denied with EPERM: %s (exit %d, err %v, stderr %q)", strings.TrimSpace(r.stdout), r.code, r.err, r.stderr)
 	}
 }

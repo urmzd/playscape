@@ -2,10 +2,14 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +33,7 @@ func TestRunArgsLockTheContainerDown(t *testing.T) {
 	joined := " " + strings.Join(args, " ") + " "
 	for _, want := range []string{
 		" --runtime runsc ", " --network none ", " --read-only ", " --cap-drop ALL ",
-		" --security-opt no-new-privileges ", " --user 1000:1000 ", " --pids-limit 256 ",
+		" --security-opt no-new-privileges ", " --security-opt seccomp=/dev/stdin ", " --user 1000:1000 ", " --pids-limit 256 ",
 		" --memory 536870912 ", " --memory-swap 536870912 ", " --cpus 0.250 ",
 		" --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=268435456 ", " --init ",
 		" --label playscape.instance=i-1 ", " --label playscape.compartment=workload ", " --label team=a ",
@@ -37,6 +41,73 @@ func TestRunArgsLockTheContainerDown(t *testing.T) {
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("run args lack %q:\n%s", want, joined)
+		}
+	}
+}
+
+// Production cannot fall back to a runtime that shares the host kernel
+// without saying so.
+func TestNewRequiresASandboxRuntime(t *testing.T) {
+	bin, err := os.Executable() // any binary: New does not run it
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rt := range []string{RuntimeRunc, "crun", "io.containerd.runc.v2"} {
+		if _, err := New(Config{Binary: bin, Runtime: rt}); !errors.Is(err, ErrInsecureRuntime) {
+			t.Errorf("%s: err = %v, want ErrInsecureRuntime", rt, err)
+		}
+	}
+	d, err := New(Config{Binary: bin})
+	if err != nil || d.runtime != RuntimeGVisor {
+		t.Fatalf("default runtime: %v, %v", d, err)
+	}
+	var log strings.Builder
+	d, err = New(Config{Binary: bin, Runtime: RuntimeRunc, InsecureDevelopmentRuntime: true, Log: &log})
+	if err != nil || d.runtime != RuntimeRunc {
+		t.Fatalf("opted in: %v, %v", d, err)
+	}
+	if !strings.Contains(log.String(), "NOT a boundary") {
+		t.Fatalf("no warning: %q", log.String())
+	}
+}
+
+// The profile is Docker's default with the denied syscalls never allowed,
+// whatever capabilities a rule is conditioned on.
+func TestSeccompProfileDeniesTheListedSyscalls(t *testing.T) {
+	var p struct {
+		DefaultAction   string `json:"defaultAction"`
+		DefaultErrnoRet *int   `json:"defaultErrnoRet"`
+		Syscalls        []struct {
+			Names  []string          `json:"names"`
+			Action string            `json:"action"`
+			Args   []json.RawMessage `json:"args"`
+		} `json:"syscalls"`
+	}
+	if err := json.Unmarshal(seccompProfile, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.DefaultAction != "SCMP_ACT_ERRNO" || p.DefaultErrnoRet == nil || *p.DefaultErrnoRet != 1 {
+		t.Fatalf("default: %s %v, want SCMP_ACT_ERRNO with EPERM", p.DefaultAction, p.DefaultErrnoRet)
+	}
+	allowed := map[string]bool{}
+	for _, r := range p.Syscalls {
+		for _, n := range r.Names {
+			if r.Action != "SCMP_ACT_ALLOW" {
+				continue
+			}
+			if slices.Contains(deniedSyscalls, n) {
+				t.Errorf("%s is allowed", n)
+			}
+			if n == "personality" && len(r.Args) == 0 {
+				t.Error("personality is allowed with any argument")
+			}
+			allowed[n] = true
+		}
+	}
+	// What a workload needs is still there.
+	for _, n := range []string{"read", "write", "execve", "clone", "openat", "socket", "personality"} {
+		if !allowed[n] {
+			t.Errorf("%s is not allowed", n)
 		}
 	}
 }
@@ -92,19 +163,24 @@ func TestStartRefusesWhatItCannotEnforce(t *testing.T) {
 }
 
 // dockerDriver returns a driver against a reachable daemon with the test
-// image pulled, or skips.
+// image pulled, or skips; with PLAYSCAPE_DOCKER_TEST_REQUIRED set it fails
+// instead, so a CI job cannot pass by skipping.
 func dockerDriver(t *testing.T, cfg Config) (*Driver, isolatetest.Options) {
 	t.Helper()
+	skip := t.Skip
+	if os.Getenv("PLAYSCAPE_DOCKER_TEST_REQUIRED") != "" {
+		skip = t.Fatal
+	}
 	if testing.Short() {
-		t.Skip("docker tests are skipped in -short mode")
+		skip("docker tests are skipped in -short mode")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker is not installed")
+		skip("docker is not installed")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-		t.Skip("the docker daemon is not reachable")
+		skip("the docker daemon is not reachable")
 	}
 	image := os.Getenv("PLAYSCAPE_DOCKER_TEST_IMAGE")
 	if image == "" {
@@ -112,7 +188,7 @@ func dockerDriver(t *testing.T, cfg Config) (*Driver, isolatetest.Options) {
 	}
 	if exec.Command("docker", "image", "inspect", image).Run() != nil {
 		if out, err := exec.Command("docker", "pull", image).CombinedOutput(); err != nil {
-			t.Skipf("cannot pull %s: %v: %s", image, err, out)
+			skip(fmt.Sprintf("cannot pull %s: %v: %s", image, err, out))
 		}
 	}
 	// Docker Desktop and Colima share only some host directories with
@@ -137,6 +213,16 @@ func dockerDriver(t *testing.T, cfg Config) (*Driver, isolatetest.Options) {
 		return dir
 	}
 	cfg.WorkRoot = tempDir(t)
+	// The runtime under test: runc by default, which needs the
+	// development opt-in, or PLAYSCAPE_DOCKER_TEST_RUNTIME (runsc in CI).
+	if cfg.Runtime == "" {
+		cfg.Runtime = os.Getenv("PLAYSCAPE_DOCKER_TEST_RUNTIME")
+	}
+	if cfg.Runtime == "" {
+		cfg.Runtime = RuntimeRunc
+	}
+	cfg.InsecureDevelopmentRuntime = !sandboxRuntimes[cfg.Runtime]
+	cfg.Log = io.Discard
 	d, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +239,25 @@ func TestConformance(t *testing.T) {
 	d, opts := dockerDriver(t, Config{})
 	isolatetest.Run(t, d, opts)
 	assertNoLeftovers(t, d)
+}
+
+// Every container runs under the driver's runtime.
+func TestRuntimeIsHonored(t *testing.T) {
+	d, opts := dockerDriver(t, Config{})
+	inst, err := d.Start(context.Background(), isolate.Spec{Image: opts.Image, Connectors: &isolate.ConnectorSpec{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = inst.Close(context.Background()) }()
+	i := inst.(*instance)
+	out, err := exec.Command("docker", "inspect", "--format", "{{.HostConfig.Runtime}}", i.workload, i.connectors).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(out)); len(got) != 2 || got[0] != d.runtime || got[1] != d.runtime {
+		t.Fatalf("runtimes %q, want %s", got, d.runtime)
+	}
+	t.Logf("runtime %s", d.runtime)
 }
 
 // A runtime the daemon does not have fails the start, so the runtime flag
