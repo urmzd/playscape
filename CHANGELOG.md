@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 (2026-10-30)
+
+### Features
+
+- **isolate**: run a run's tools in pooled, isolated instances (#17) ([d8415f6](https://github.com/urmzd/playscape/commit/d8415f6ec77c02601d8781311eaa500365ddfb79))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.7.2...v0.8.0)
+
+
 ## 0.7.2 (2026-10-29)
 
 ### .
