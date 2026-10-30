@@ -33,7 +33,7 @@ func TestRunArgsLockTheContainerDown(t *testing.T) {
 	joined := " " + strings.Join(args, " ") + " "
 	for _, want := range []string{
 		" --runtime runsc ", " --network none ", " --read-only ", " --cap-drop ALL ",
-		" --security-opt no-new-privileges ", " --security-opt seccomp=/dev/stdin ", " --user 1000:1000 ", " --pids-limit 256 ",
+		" --security-opt no-new-privileges ", " --security-opt seccomp=/dev/stdin ", " --user 1000:1000 ", " --pids-limit 1088 ",
 		" --memory 536870912 ", " --memory-swap 536870912 ", " --cpus 0.250 ",
 		" --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=268435456 ", " --init ",
 		" --label playscape.instance=i-1 ", " --label playscape.compartment=workload ", " --label team=a ",
@@ -109,6 +109,17 @@ func TestSeccompProfileDeniesTheListedSyscalls(t *testing.T) {
 		if !allowed[n] {
 			t.Errorf("%s is not allowed", n)
 		}
+	}
+}
+
+// Under gVisor the host cgroup's PIDs limit bounds gVisor's own threads,
+// so it gets room for them; the workload's limit is set in the sandbox.
+func TestHostPIDsLimit(t *testing.T) {
+	if got := (&Driver{runtime: RuntimeRunc}).hostPIDs(64); got != 64 {
+		t.Errorf("runc: %d", got)
+	}
+	if got := (&Driver{runtime: RuntimeGVisor}).hostPIDs(64); got != 64*gvisorThreadsPerTask+gvisorThreadsBase {
+		t.Errorf("runsc: %d", got)
 	}
 }
 

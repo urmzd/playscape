@@ -341,7 +341,7 @@ func (d *Driver) runArgs(id string, c container, labels map[string]string) []str
 		"--security-opt", "no-new-privileges",
 		"--security-opt", "seccomp=/dev/stdin", // seccompProfile, on stdin
 		"--user", c.user,
-		"--pids-limit", strconv.FormatInt(r.PIDs, 10),
+		"--pids-limit", strconv.FormatInt(d.hostPIDs(r.PIDs), 10),
 		"--memory", strconv.FormatInt(r.MemoryBytes, 10),
 		"--memory-swap", strconv.FormatInt(r.MemoryBytes, 10),
 		"--cpus", strconv.FormatFloat(float64(r.CPUMillis)/1000, 'f', 3, 64),
@@ -359,6 +359,42 @@ func (d *Driver) runArgs(id string, c container, labels map[string]string) []str
 	}
 	args = append(args, "--entrypoint", d.idle[0], c.image)
 	return append(args, d.idle[1:]...)
+}
+
+// gVisor runs a sandbox's processes as its own tasks, on host threads of
+// the sandbox: about 35 when idle and 2 more per task. Docker's PIDs limit
+// is the host cgroup's, so under gVisor it bounds those threads, and a
+// workload reaching it starves gVisor and ends the instance. The driver
+// instead enforces the limit inside the sandbox (guestPIDs) and gives the
+// host cgroup room for gVisor's own threads.
+const (
+	gvisorThreadsPerTask = 4
+	gvisorThreadsBase    = 64
+)
+
+// hostPIDs is the --pids-limit for a compartment limited to pids.
+func (d *Driver) hostPIDs(pids int64) int64 {
+	if d.runtime == RuntimeGVisor {
+		return pids*gvisorThreadsPerTask + gvisorThreadsBase
+	}
+	return pids
+}
+
+// guestPIDs sets the PIDs limit inside a gVisor sandbox: its cgroupfs's
+// pids.max, which gVisor enforces when a task is created (EAGAIN). It runs
+// as root, the owner of the file, with the image's /bin/sh; the workload's
+// user cannot change it. Other runtimes need nothing: the host cgroup's
+// limit is the processes' own.
+func (d *Driver) guestPIDs(ctx context.Context, name string, pids int64) error {
+	if d.runtime != RuntimeGVisor {
+		return nil
+	}
+	_, err := d.cli(ctx, nil, "exec", "--user", "0", name, "/bin/sh", "-c",
+		`echo "$1" > /sys/fs/cgroup/pids/pids.max && [ "$(cat /sys/fs/cgroup/pids/pids.max)" = "$1" ]`, "sh", strconv.FormatInt(pids, 10))
+	if err != nil {
+		return fmt.Errorf("setting the PIDs limit in the sandbox: %w", err)
+	}
+	return nil
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -386,6 +422,7 @@ type instance struct {
 	volume     string // socket volume, when there are connectors
 	work       string // host work directory
 	files      *workspace.Local
+	pids       map[string]int64 // each container's PIDs limit, by name
 
 	mu      sync.Mutex
 	closed  bool
@@ -441,11 +478,19 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 		name: i.workload, compartment: isolate.Workload, image: spec.Image,
 		user: user, resources: spec.Resources, network: i.d.network(spec.Network), workDir: isolate.WorkDir, mounts: mounts,
 	}
+	i.pids = map[string]int64{workload.name: workload.resources.WithDefaults().PIDs}
 	if _, err := i.d.run(ctx, i.d.runArgs(i.id, workload, spec.Labels)); err != nil {
 		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
 	}
+	if err := i.d.guestPIDs(ctx, workload.name, i.pids[workload.name]); err != nil {
+		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
+	}
 	if i.connectors != "" {
+		i.pids[connector.name] = connector.resources.WithDefaults().PIDs
 		if _, err := i.d.run(ctx, i.d.runArgs(i.id, connector, spec.Labels)); err != nil {
+			return fmt.Errorf("%w: docker: connectors: %w", isolate.ErrStart, err)
+		}
+		if err := i.d.guestPIDs(ctx, connector.name, i.pids[connector.name]); err != nil {
 			return fmt.Errorf("%w: docker: connectors: %w", isolate.ErrStart, err)
 		}
 	}
@@ -553,6 +598,10 @@ func (i *instance) Exec(ctx context.Context, c isolate.Command, stdio isolate.St
 		defer rcancel()
 		if _, err := i.d.cli(rctx, nil, "restart", "--time", "0", name); err != nil && !i.isClosed() {
 			return isolate.ExitStatus{}, fmt.Errorf("isolate: docker: ending a stopped command: %w", err)
+		}
+		// A restarted gVisor sandbox is a new kernel, without the limit.
+		if err := i.d.guestPIDs(rctx, name, i.pids[name]); err != nil && !i.isClosed() {
+			return isolate.ExitStatus{}, fmt.Errorf("isolate: docker: after ending a stopped command: %w", err)
 		}
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			return isolate.ExitStatus{}, fmt.Errorf("%w: after %s", isolate.ErrTimeout, timeout)
