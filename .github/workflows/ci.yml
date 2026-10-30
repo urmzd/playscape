@@ -85,9 +85,11 @@ jobs:
           echo "${GVISOR_SHA512}  $RUNNER_TEMP/gvisor.tar.bz2" | sha512sum --check --strict
           tar -xjf "$RUNNER_TEMP/gvisor.tar.bz2" -C "$RUNNER_TEMP" runsc
           sudo install -m 0755 "$RUNNER_TEMP/runsc" /usr/local/bin/runsc
-          # --oci-seccomp makes gVisor enforce the driver's seccomp profile
-          # too; without it runsc ignores the profile.
-          sudo runsc install -- --oci-seccomp
+          # --oci-seccomp: gVisor enforces the driver's seccomp profile too
+          # (without it runsc ignores the profile). --host-uds=all: the
+          # compartments' unix sockets cross sandboxes through the shared
+          # socket directory.
+          sudo runsc install -- --oci-seccomp --host-uds=all
           sudo systemctl restart docker
           runsc --version
           docker info --format '{{json .Runtimes.runsc}}'
