@@ -359,9 +359,14 @@ func (s suite) boundary(t *testing.T) {
 		{"user is not root", `[ "$(id -u)" != 0 ]`},
 		{"no capabilities", `grep -q '^CapEff:[[:space:]]*0000000000000000$' /proc/self/status`},
 		{"no new privileges", `grep -q '^NoNewPrivs:[[:space:]]*1$' /proc/self/status`},
-		{"loopback only", `[ "$(ls /sys/class/net)" = lo ]`},
-		{"pids limit", `[ "$(cat /sys/fs/cgroup/pids.max)" = 64 ]`},
-		{"memory limit", `[ "$(cat /sys/fs/cgroup/memory.max)" = 67108864 ]`},
+		// /proc/net/dev, not /sys/class/net, which gVisor does not have.
+		{"loopback only", `[ "$(awk -F: 'NR > 2 { gsub(/ /, "", $1); print $1 }' /proc/net/dev)" = lo ]`},
+		// By behavior, since gVisor's own cgroupfs does not show the
+		// limit: of 100 processes, fewer than 100 start. Only builtins run
+		// after the forks, which may have used up the limit.
+		{"pids limit", `rm -f /tmp/pids; ( i=0; while [ $i -lt 100 ]; do sleep 30 & echo $! >> /tmp/pids; i=$((i+1)); done ) 2>/dev/null; n=0; while read p; do kill $p; n=$((n+1)); done < /tmp/pids; [ $n -lt 100 ]`},
+		// cgroup v2, or the v1 layout gVisor presents.
+		{"memory limit", `f=/sys/fs/cgroup/memory.max; [ -e $f ] || f=/sys/fs/cgroup/memory/memory.limit_in_bytes; [ "$(cat $f)" = 67108864 ]`},
 		{"scratch is bounded", `! dd if=/dev/zero of=/tmp/fill bs=1048576 count=16 2>/dev/null`},
 	}
 	for _, c := range checks {

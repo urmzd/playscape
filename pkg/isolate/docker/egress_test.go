@@ -94,8 +94,13 @@ func TestEgressThroughTheGate(t *testing.T) {
 		}
 	}
 
+	// The sandbox reaches the gate by address: gVisor's netstack cannot
+	// reach Docker's embedded DNS server on hosts whose NAT rules are in
+	// nftables, so a name would resolve under runc only.
+	gate := strings.TrimSpace(run("inspect", "--format", "{{(index .NetworkSettings.Networks \""+sandboxNet+"\").IPAddress}}", gateName)) + ":3128"
+
 	// A proxy without an internal egress network is refused.
-	if _, err := d0.Start(context.Background(), isolate.Spec{Image: opts.Image, Network: isolate.Network{Proxy: "gate:3128"}}); err == nil {
+	if _, err := d0.Start(context.Background(), isolate.Spec{Image: opts.Image, Network: isolate.Network{Proxy: gate}}); err == nil {
 		t.Fatal("a driver with no egress network started an instance with a proxy")
 	}
 	d, err := New(Config{
@@ -105,7 +110,7 @@ func TestEgressThroughTheGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := d.Start(context.Background(), isolate.Spec{Image: opts.Image, Network: isolate.Network{Proxy: "gate:3128"}})
+	inst, err := d.Start(context.Background(), isolate.Spec{Image: opts.Image, Network: isolate.Network{Proxy: gate}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +129,7 @@ func TestEgressThroughTheGate(t *testing.T) {
 		}
 		return strings.TrimSpace(out.String())
 	}
-	proxy := egress.ProxyEnv("gate:3128", token)
+	proxy := egress.ProxyEnv(gate, token)
 
 	if got := get("http://upstream:8080/", proxy); got != "200 Bearer real-gh" {
 		t.Errorf("allowed host through the gate: %q", got)
@@ -132,7 +137,7 @@ func TestEgressThroughTheGate(t *testing.T) {
 	if got := get("http://forbidden:8080/", proxy); got != "403" {
 		t.Errorf("denied host through the gate: %q", got)
 	}
-	if got := get("http://upstream:8080/", egress.ProxyEnv("gate:3128", "wrong")); got != "407" {
+	if got := get("http://upstream:8080/", egress.ProxyEnv(gate, "wrong")); got != "407" {
 		t.Errorf("wrong token: %q", got)
 	}
 	for _, target := range []string{"http://upstream:8080/", "http://forbidden:8080/", "http://1.1.1.1/"} {
