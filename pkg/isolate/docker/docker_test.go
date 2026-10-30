@@ -24,7 +24,7 @@ func TestRunArgsLockTheContainerDown(t *testing.T) {
 	d := &Driver{bin: "docker", runtime: RuntimeGVisor, idle: []string{"sleep", "infinity"}}
 	args := d.runArgs("i-1", container{
 		name: "playscape-i-1", compartment: isolate.Workload, image: "img", user: "1000:1000",
-		resources: isolate.Resources{CPUMillis: 250}, workDir: "/work", mounts: []string{"type=bind,source=/w,target=/work"},
+		resources: isolate.Resources{CPUMillis: 250}, network: "none", workDir: "/work", mounts: []string{"type=bind,source=/w,target=/work"},
 	}, map[string]string{"team": "a"})
 	joined := " " + strings.Join(args, " ") + " "
 	for _, want := range []string{
@@ -81,9 +81,13 @@ func TestCLIFailures(t *testing.T) {
 
 func TestStartRefusesWhatItCannotEnforce(t *testing.T) {
 	d := &Driver{bin: "docker", runtime: RuntimeRunc}
-	_, err := d.Start(context.Background(), isolate.Spec{Image: "img", Network: isolate.Network{Proxy: "gate:3128"}})
-	if !errors.Is(err, isolate.ErrUnsupported) {
-		t.Fatalf("err = %v", err)
+	for _, spec := range []isolate.Spec{
+		{Image: "img", Network: isolate.Network{Proxy: "gate:3128"}},
+		{Image: "img", Connectors: &isolate.ConnectorSpec{Network: isolate.Network{Proxy: "gate:3128"}}},
+	} {
+		if _, err := d.Start(context.Background(), spec); !errors.Is(err, isolate.ErrUnsupported) {
+			t.Fatalf("a proxy without an egress network: err = %v", err)
+		}
 	}
 }
 

@@ -193,11 +193,12 @@ func (r Resources) validate() error {
 // Network is a compartment's network. The zero value has no network at all:
 // only a loopback interface.
 type Network struct {
-	// Proxy is the egress gate the compartment reaches the outside
-	// through, as "host:port" seen from inside the instance. It is the
-	// only address the compartment can reach; drivers that cannot
-	// enforce that return ErrUnsupported. Commands get it as HTTP_PROXY
-	// and HTTPS_PROXY.
+	// Proxy is the egress gate (package isolate/egress) the compartment
+	// reaches the outside through, as "host:port" seen from inside the
+	// instance. The compartment gets no route anywhere else; drivers that
+	// cannot enforce that return ErrUnsupported. Drivers set no proxy
+	// variables: the gate's per-lease token is not part of the spec, so
+	// the caller adds egress.ProxyEnv to each command.
 	Proxy string
 }
 

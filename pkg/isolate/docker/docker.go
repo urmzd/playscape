@@ -88,6 +88,12 @@ type Config struct {
 	// IdleCommand keeps a container running between commands; empty
 	// means ["sleep", "infinity"]. The image must have it.
 	IdleCommand []string
+	// EgressNetwork is the Docker network a compartment whose Spec has a
+	// Network.Proxy joins instead of none. It must be created with
+	// --internal, so it has no route out, and the egress gate must be
+	// reachable on it at the spec's proxy address. Empty refuses every
+	// spec with a proxy (ErrUnsupported).
+	EgressNetwork string
 }
 
 // Driver starts Docker-backed instances. It is safe for concurrent use.
@@ -97,6 +103,11 @@ type Driver struct {
 	workRoot string
 	idle     []string
 	env      []string // the CLI's own environment
+	egress   string
+
+	egressMu sync.Mutex
+	egressOK bool  // the network was found internal
+	egressNo error // the network is not internal: never usable
 }
 
 var _ isolate.Driver = (*Driver)(nil)
@@ -130,7 +141,10 @@ func New(cfg Config) (*Driver, error) {
 	if len(cfg.IdleCommand) == 0 {
 		cfg.IdleCommand = []string{"sleep", "infinity"}
 	}
-	return &Driver{bin: bin, runtime: cfg.Runtime, workRoot: root, idle: cfg.IdleCommand, env: cliEnv()}, nil
+	if cfg.EgressNetwork != "" && !runtimeName.MatchString(cfg.EgressNetwork) {
+		return nil, fmt.Errorf("isolate: docker: egress network %q", cfg.EgressNetwork)
+	}
+	return &Driver{bin: bin, runtime: cfg.Runtime, workRoot: root, idle: cfg.IdleCommand, env: cliEnv(), egress: cfg.EgressNetwork}, nil
 }
 
 // cliEnv is the environment the docker CLI runs with: the variables it
@@ -161,7 +175,9 @@ func (d *Driver) Start(ctx context.Context, spec isolate.Spec) (isolate.Instance
 		return nil, err
 	}
 	if spec.Network.Proxy != "" || (spec.Connectors != nil && spec.Connectors.Network.Proxy != "") {
-		return nil, fmt.Errorf("%w: docker: egress through a proxy", isolate.ErrUnsupported)
+		if err := d.egressReady(ctx); err != nil {
+			return nil, err
+		}
 	}
 	mounts, err := resolveMounts(spec.Mounts)
 	if err != nil {
@@ -192,6 +208,37 @@ func (d *Driver) Start(ctx context.Context, spec isolate.Spec) (isolate.Instance
 		return nil, err
 	}
 	return inst, nil
+}
+
+// egressReady checks, once, that the egress network exists and is internal:
+// a network with a route out would let a compartment around the gate.
+func (d *Driver) egressReady(ctx context.Context) error {
+	if d.egress == "" {
+		return fmt.Errorf("%w: docker: egress through a proxy needs Config.EgressNetwork", isolate.ErrUnsupported)
+	}
+	d.egressMu.Lock()
+	defer d.egressMu.Unlock()
+	if d.egressOK || d.egressNo != nil {
+		return d.egressNo
+	}
+	out, err := d.cli(ctx, nil, "network", "inspect", "--format", "{{.Internal}}", d.egress)
+	if err != nil {
+		return fmt.Errorf("%w: docker: egress network: %w", isolate.ErrStart, err) // may pass; checked again
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		d.egressNo = fmt.Errorf("%w: docker: egress network %q is not --internal, so it has a route around the gate", isolate.ErrUnsupported, d.egress)
+		return d.egressNo
+	}
+	d.egressOK = true
+	return nil
+}
+
+// network is the --network value for a compartment with n.
+func (d *Driver) network(n isolate.Network) string {
+	if n.Proxy != "" {
+		return d.egress
+	}
+	return "none"
 }
 
 // resolveMounts checks that every mount is a directory and resolves links,
@@ -242,6 +289,7 @@ type container struct {
 	image       string
 	user        string
 	resources   isolate.Resources
+	network     string // "none" or the egress network
 	workDir     string
 	mounts      []string // --mount values
 }
@@ -253,7 +301,7 @@ func (d *Driver) runArgs(id string, c container, labels map[string]string) []str
 		"run", "--detach", "--init",
 		"--name", c.name,
 		"--runtime", d.runtime,
-		"--network", "none",
+		"--network", c.network,
 		"--read-only",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
@@ -350,13 +398,13 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 		i.connectors = namePrefix + i.id + "-connectors"
 		connector = container{
 			name: i.connectors, compartment: isolate.Connectors, image: image,
-			user: defaultUser(c.User), resources: c.Resources, workDir: "/tmp",
+			user: defaultUser(c.User), resources: c.Resources, network: i.d.network(c.Network), workDir: "/tmp",
 			mounts: []string{sock},
 		}
 	}
 	workload := container{
 		name: i.workload, compartment: isolate.Workload, image: spec.Image,
-		user: user, resources: spec.Resources, workDir: isolate.WorkDir, mounts: mounts,
+		user: user, resources: spec.Resources, network: i.d.network(spec.Network), workDir: isolate.WorkDir, mounts: mounts,
 	}
 	if _, err := i.d.cli(ctx, nil, i.d.runArgs(i.id, workload, spec.Labels)...); err != nil {
 		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
