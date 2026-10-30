@@ -23,6 +23,10 @@ tool        -> task, workspace    (Tool, Runtime, Registry, Provider)
 tool/cli    -> tool               ("cli" provider: argv-templated binaries)
 runner      -> tool, task         (Executor, Local, Shell tool adapter)
 runner/k8s  -> runner, client-go  (one batch/v1 Job per run; its own module)
+isolate     -> workspace, runner  (Driver, Instance, Spec, Pool, Executor)
+isolate/local  -> isolate         (no isolation: host processes, for tests)
+isolate/docker -> isolate         (containers through the docker CLI)
+isolate/isolatetest -> isolate    (the conformance suite every driver runs)
 node        -> task, sandbox      (Node, Spec, Factory, Spawner)
 node/inproc -> node, tool, ...    (in-process execution substrate)
    |
@@ -84,6 +88,37 @@ Caveat: the `cli` provider is not an isolation boundary. The binary runs on the 
 
 Caveats: runs see no shared workspace (scratch only), stdout and stderr arrive interleaved as one stream, and status is polled rather than watched.
 
+## Isolated Instances
+
+`pkg/isolate` is where a run's tools execute: an `Instance` started by a `Driver` from a `Spec`, private to one run and destroyed when it ends. The agent loop stays in the trusted program; only commands run in the instance. An instance has a fixed layout:
+
+| Path | Holds | Access |
+|------|-------|--------|
+| `/work` | The run's own files; commands start here; `Files()` on the host | Read and write, removed at `Close` |
+| `/project` | The project's base snapshot (`Mounts.Project`) | Read only |
+| `/me` | The requester's volume (`Mounts.Me`) | Read and write |
+| `/run/playscape` | The directory shared with the connectors compartment | Read and write |
+
+Every zero `Spec` field is the strictest choice: no network (loopback only), no mounts beyond `/work`, the driver's non-root user, and the `Default*` resource limits. There is no way to ask for unlimited. A driver that cannot enforce part of a valid spec fails with `ErrUnsupported` instead of starting something weaker.
+
+**Compartments.** A spec with `Connectors` gets a second compartment for the person's tool servers, which hold credentials the workload must not read. It mounts none of the workload's directories and has its own processes, network and limits; the two share only the socket directory. `Command.In` picks the compartment a command runs in.
+
+**Drivers.**
+
+| Driver | Boundary | Use |
+|--------|----------|-----|
+| `isolate/docker` with `runsc` | gVisor: a user-space kernel per container | Untrusted code |
+| `isolate/docker` with `runc` (default) | Namespaces, cgroups, seccomp, no capabilities | Development, trusted tools |
+| `isolate/local` | None; every `Start` says so on its log | Tests only |
+
+The Docker driver shells out to the `docker` CLI, so the root module gains no dependency. Each compartment is a container started with `--network none --read-only --cap-drop ALL --security-opt no-new-privileges --init`, a numeric non-root `--user`, `--pids-limit`, `--memory` with equal `--memory-swap`, `--cpus`, and a size-limited tmpfs at `/tmp`. `/work` is a host directory under `Config.WorkRoot` bind-mounted into the workload, so `Files()` is a `workspace.Local` over it. The socket directory is a 1 MiB tmpfs Docker volume mounted in both containers. Commands run through `docker exec`; their environment reaches the CLI through its own environment, never its argv. A command that times out restarts its compartment (`docker restart -t 0`), because ending a `docker exec` client does not end the process it started.
+
+**Pools.** `Pool` keeps `Warm` started instances per spec it has been asked for and leases each to one run. `Release` (or the lease's `Close`) destroys the instance; the pool never hands it out again and starts a fresh one in the background. `Max` bounds every instance the pool holds, including ones starting and ones being destroyed. A lease that finds no warm instance starts one itself; when the pool is full it evicts a warm instance of another spec and waits for room, and refills hold back while any lease waits. Background start failures go to `OnError` and are retried with backoff.
+
+**Runs.** `isolate.Executor` adapts an instance into a `runner.Executor`, so `runner.Shell` runs inside a lease. Every `Run` shares the instance's files and processes; the request's image and resources are fixed by the spec and ignored.
+
+Caveats: egress through a proxy is not implemented, so the only network is none. `/work` is not size limited by the Docker driver. Mounts are fixed when an instance starts, so a spec with a person volume pools only for that person. Warm instances are not health checked. `isolatetest` is run by both drivers; the boundary checks (read-only root and project, non-root, no capabilities, no new privileges, loopback only, pids and memory limits in the cgroup, bounded scratch, connectors unable to see the workload's mounts and the workload unable to read the connectors' environment) run against Docker only.
+
 ## Self-Referential Agents
 
 `tool.Runtime.Spawn` submits a sub-task back into the tool's own deployment and returns its task ID. The child waits for a node like any other task, so an agent calling another agent (or itself) is just another submitter. Recursion is bounded by policy: a tool can only spawn tools on its allowlist, and the default is none.
@@ -118,7 +153,7 @@ It opens no listener and exits with the command. It is not isolation: `runner.Lo
 
 ## Validated Paths
 
-- `make test` race-tests both modules: sandbox confinement (traversal, list-leak), workspace confinement (symlink escapes through linked directories and files), NGAC semantics (attribute inheritance, multi-policy-class conjunction, prohibition override), the pools (bounded concurrency, FIFO backlog, `ErrFull`, drain on scale-down, retention, `Close`), policy-gated spawning, the Job runner against a fake clientset, and the CLI end to end.
+- `make test` race-tests both modules, including the `isolatetest` suite against `isolate/local` and, where a Docker daemon is reachable, `isolate/docker`: sandbox confinement (traversal, list-leak), workspace confinement (symlink escapes through linked directories and files), NGAC semantics (attribute inheritance, multi-policy-class conjunction, prohibition override), the pools (bounded concurrency, FIFO backlog, `ErrFull`, drain on scale-down, retention, `Close`), policy-gated spawning, the Job runner against a fake clientset, and the CLI end to end.
 - `examples/saige/` runs real [saige](https://github.com/urmzd/saige) agents as workloads, including an agent delegating to a sub-agent.
 - fiber's sandbox and Humagen's platform build on `controlplane.NewMemory` and are built against each change.
 

@@ -32,7 +32,9 @@ can see what a policy lets it read and change.
 - **Bounded in-process pools**: each deployment runs its tasks on a fixed number of nodes, one task per node at a time, with a bounded backlog; resizing never cancels work
 - **Shared workspace**: every node reads and writes one backend; the local backend is confined to its directory with `os.Root`, so a symbolic link cannot lead a key outside it
 - **Self-referential agents**: a tool can spawn sub-tasks into its own deployment (an agent calling another agent), gated by its policy
-- **Command runners**: `runner.Shell` turns an executor into a tool; `pkg/runner/k8s`, a module of its own, runs each call as one locked-down Kubernetes Job
+- **Isolated instances**: `pkg/isolate` runs a run's commands in a sandbox instance instead of on the host. The Docker driver (runc, or runsc for gVisor) starts each with no network, a read-only root, no capabilities, a non-root user, and CPU, memory, process and scratch limits; a second compartment can hold credential-bearing tool servers that share only a socket directory with the workload
+- **Warm pools, one run per instance**: `isolate.Pool` keeps instances warm per spec and leases each to exactly one run; releasing destroys it and a fresh one starts in the background
+- **Command runners**: `runner.Shell` turns an executor into a tool; `isolate.Executor` runs it inside a leased instance; `pkg/runner/k8s`, a module of its own, runs each call as one locked-down Kubernetes Job
 - **CLI tools**: the `cli` provider wraps a binary behind a fixed argv template, an environment allowlist, a timeout and output caps
 - **Metrics seam**: node counts, backlog, throughput and latency recorded behind a transport-agnostic `metrics.Recorder`
 
@@ -202,6 +204,31 @@ $ echo $?
 
 The exit status is the command's own, or 77 when it succeeded but a change was denied, 124 on timeout, 125 when it could not run, 130 when interrupted. The command is a host process with your privileges: the policy decides what it sees of the workspace and what it may change there, not what it can reach on the machine.
 
+### Isolated instances
+
+```go
+drv, err := docker.New(docker.Config{Runtime: docker.RuntimeGVisor})
+if err != nil {
+	return err
+}
+pool := isolate.NewPool(drv, isolate.PoolConfig{Warm: 4, Max: 500})
+defer pool.Close(ctx)
+
+lease, err := pool.Lease(ctx, isolate.Spec{
+	Image:  "python:3.13-alpine",
+	Mounts: isolate.Mounts{Project: snapshotDir},
+})
+if err != nil {
+	return err
+}
+defer lease.Release(ctx) // destroys the instance; it is never reused
+if err := registry.Register(runner.Shell("shell", isolate.Executor{Instance: lease}, runner.ShellConfig{})); err != nil {
+	return err
+}
+```
+
+Inside an instance, the run's files are at `/work` (where commands start, and what `lease.Files()` reads and writes from the host), the project at `/project` (read only), the person volume at `/me`, and the socket directory shared with the connectors compartment at `/run/playscape`. Every zero `Spec` field is the strictest choice: no network, no extra mounts, a non-root user, small default limits. `isolate/local` implements the same interface with no isolation at all, for tests. Every driver runs the `isolatetest` conformance suite.
+
 ### Sandboxed shell on Kubernetes
 
 ```go
@@ -222,7 +249,10 @@ Each call becomes one batch/v1 Job: non-root, no privilege escalation, all capab
 - **No per-task cancel.** Ending the context given to `Submit` stops the wait, not the task; `Close` cancels every running task at once.
 - **Waiting on your own deployment can deadlock.** A tool that blocks on a sub-task it spawned holds its node; if every node waits, nothing runs. Size `Replicas` for it, or run sub-tasks on the parent's node.
 - **Results are kept up to a bound** (1024 per deployment by default); `Result` reports `ErrUnknownTask` for one that has been forgotten.
-- **The workspace policy is not process isolation.** It confines what a tool reaches through the workspace. The `cli` provider, `runner.Local` and `playscape run` start host processes with your privileges; isolation needs `pkg/runner/k8s`.
+- **The workspace policy is not process isolation.** It confines what a tool reaches through the workspace. The `cli` provider, `runner.Local`, `isolate/local` and `playscape run` start host processes with your privileges; isolation needs `pkg/isolate/docker` or `pkg/runner/k8s`.
+- **Docker instances** have no egress yet: a spec asking for a proxy is refused (`ErrUnsupported`). `/work` is a host directory and is not size limited; only `/tmp` is. A command that times out restarts its compartment, which ends every other command running there. The daemon must be able to bind-mount `Config.WorkRoot` (with Docker Desktop or Colima, a directory shared with the VM). Without runsc, the boundary is the host kernel's namespaces, which is not enough for hostile code.
+- **Compartments** share one 1 MiB tmpfs directory, meant for sockets. Anything either side writes there, the other can read.
+- **Pools** fix mounts at start, so a spec with a person volume warms only that person's instances. Warm instances are not health checked before a lease, and every spec a pool has seen stays warm until evicted.
 - **Kubernetes runs** see no shared workspace (scratch only), stdout and stderr arrive as one stream, and status is polled, not watched.
 - **The CLI** runs commands with `runner.Local` only, shows stdout and stderr as one stream, and stages every readable file before a run.
 
