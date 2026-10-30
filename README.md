@@ -33,6 +33,7 @@ can see what a policy lets it read and change.
 - **Shared workspace**: every node reads and writes one backend; the local backend is confined to its directory with `os.Root`, so a symbolic link cannot lead a key outside it
 - **Self-referential agents**: a tool can spawn sub-tasks into its own deployment (an agent calling another agent), gated by its policy
 - **Isolated instances**: `pkg/isolate` runs a run's commands in a sandbox instance instead of on the host. The Docker driver (runc, or runsc for gVisor) starts each with no network, a read-only root, no capabilities, a non-root user, and CPU, memory, process and scratch limits; a second compartment can hold credential-bearing tool servers that share only a socket directory with the workload
+- **Egress gate**: `isolate/egress` is an HTTP forward proxy that is an instance's only way out: a default-deny host allowlist per lease, and credential injection, so the sandbox holds a placeholder and the gate swaps in the real value for an allowed host
 - **Warm pools, one run per instance**: `isolate.Pool` keeps instances warm per spec and leases each to exactly one run; releasing destroys it and a fresh one starts in the background
 - **Command runners**: `runner.Shell` turns an executor into a tool; `isolate.Executor` runs it inside a leased instance; `pkg/runner/k8s`, a module of its own, runs each call as one locked-down Kubernetes Job
 - **CLI tools**: the `cli` provider wraps a binary behind a fixed argv template, an environment allowlist, a timeout and output caps
@@ -227,6 +228,21 @@ if err := registry.Register(runner.Shell("shell", isolate.Executor{Instance: lea
 }
 ```
 
+To give an instance a way out, serve an `egress.Gate` on an `--internal` Docker network, name that network in `docker.Config.EgressNetwork`, and set `Spec.Network.Proxy` to the gate's address. Each lease gets its own grant:
+
+```go
+token, err := gate.Grant(lease.ID(), egress.Policy{Allow: []egress.Rule{{
+	Host:     "github.route", // the sandbox calls http://github.route/...
+	Upstream: "https://api.github.com",
+	Inject:   []egress.Injection{{Header: "Authorization", Placeholder: "PLACEHOLDER", Credential: "github"}},
+}}})
+if err != nil {
+	return err
+}
+defer gate.Revoke(lease.ID())
+env := egress.ProxyEnv("gate:3128", token) // add to every command of this lease
+```
+
 Inside an instance, the run's files are at `/work` (where commands start, and what `lease.Files()` reads and writes from the host), the project at `/project` (read only), the person volume at `/me`, and the socket directory shared with the connectors compartment at `/run/playscape`. Every zero `Spec` field is the strictest choice: no network, no extra mounts, a non-root user, small default limits. `isolate/local` implements the same interface with no isolation at all, for tests. Every driver runs the `isolatetest` conformance suite.
 
 ### Sandboxed shell on Kubernetes
@@ -250,7 +266,8 @@ Each call becomes one batch/v1 Job: non-root, no privilege escalation, all capab
 - **Waiting on your own deployment can deadlock.** A tool that blocks on a sub-task it spawned holds its node; if every node waits, nothing runs. Size `Replicas` for it, or run sub-tasks on the parent's node.
 - **Results are kept up to a bound** (1024 per deployment by default); `Result` reports `ErrUnknownTask` for one that has been forgotten.
 - **The workspace policy is not process isolation.** It confines what a tool reaches through the workspace. The `cli` provider, `runner.Local`, `isolate/local` and `playscape run` start host processes with your privileges; isolation needs `pkg/isolate/docker` or `pkg/runner/k8s`.
-- **Docker instances** have no egress yet: a spec asking for a proxy is refused (`ErrUnsupported`). `/work` is a host directory and is not size limited; only `/tmp` is. A command that times out restarts its compartment, which ends every other command running there. The daemon must be able to bind-mount `Config.WorkRoot` (with Docker Desktop or Colima, a directory shared with the VM). Without runsc, the boundary is the host kernel's namespaces, which is not enough for hostile code.
+- **The egress gate cannot inject into HTTPS it only tunnels.** A `CONNECT` is allowed or denied by host and port; what is inside is encrypted, so a placeholder sent through it arrives unchanged. Injection works for plain HTTP and for gate-terminated routes (the sandbox speaks HTTP to the gate, the gate speaks TLS upstream). The lease token is in the sandbox's environment; anyone on the egress network who learns it gets that lease's allowlist until `Revoke`. Instances on one egress network can reach each other, not only the gate.
+- **Docker instances**: `/work` is a host directory and is not size limited; only `/tmp` is. A command that times out restarts its compartment, which ends every other command running there. The daemon must be able to bind-mount `Config.WorkRoot` (with Docker Desktop or Colima, a directory shared with the VM). Without runsc, the boundary is the host kernel's namespaces, which is not enough for hostile code.
 - **Compartments** share one 1 MiB tmpfs directory, meant for sockets. Anything either side writes there, the other can read.
 - **Pools** fix mounts at start, so a spec with a person volume warms only that person's instances. Warm instances are not health checked before a lease, and every spec a pool has seen stays warm until evicted.
 - **Kubernetes runs** see no shared workspace (scratch only), stdout and stderr arrive as one stream, and status is polled, not watched.

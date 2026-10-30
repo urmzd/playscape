@@ -27,6 +27,7 @@ isolate     -> workspace, runner  (Driver, Instance, Spec, Pool, Executor)
 isolate/local  -> isolate         (no isolation: host processes, for tests)
 isolate/docker -> isolate         (containers through the docker CLI)
 isolate/isolatetest -> isolate    (the conformance suite every driver runs)
+isolate/egress (leaf: the egress gate, an http.Handler forward proxy)
 node        -> task, sandbox      (Node, Spec, Factory, Spawner)
 node/inproc -> node, tool, ...    (in-process execution substrate)
    |
@@ -117,7 +118,27 @@ The Docker driver shells out to the `docker` CLI, so the root module gains no de
 
 **Runs.** `isolate.Executor` adapts an instance into a `runner.Executor`, so `runner.Shell` runs inside a lease. Every `Run` shares the instance's files and processes; the request's image and resources are fixed by the spec and ignored.
 
-Caveats: egress through a proxy is not implemented, so the only network is none. `/work` is not size limited by the Docker driver. Mounts are fixed when an instance starts, so a spec with a person volume pools only for that person. Warm instances are not health checked. `isolatetest` is run by both drivers; the boundary checks (read-only root and project, non-root, no capabilities, no new privileges, loopback only, pids and memory limits in the cgroup, bounded scratch, connectors unable to see the workload's mounts and the workload unable to read the connectors' environment) run against Docker only.
+Caveats: `/work` is not size limited by the Docker driver. Mounts are fixed when an instance starts, so a spec with a person volume pools only for that person. Warm instances are not health checked. `isolatetest` is run by both drivers; the boundary checks (read-only root and project, non-root, no capabilities, no new privileges, loopback only, pids and memory limits in the cgroup, bounded scratch, connectors unable to see the workload's mounts and the workload unable to read the connectors' environment) run against Docker only.
+
+## The Egress Gate
+
+`isolate/egress` is an instance's only way out. It is an `http.Handler` forward proxy; the embedding program serves it where sandboxes can reach it. Each lease gets a grant: `Gate.Grant(id, policy)` returns a token, and `egress.ProxyEnv(addr, token)` is the environment (`HTTP_PROXY`, `HTTPS_PROXY`, an empty `NO_PROXY`) that sends a command's clients through the gate with it. `Revoke(id)` ends the grant when the lease is released. A request without a valid token gets 407.
+
+A policy is a default-deny list of rules: a host (exact, or `*.domain` for its subdomains) and its ports (80 and 443 unless listed). A request for anything else gets 403 before the gate dials anything, so no part of it leaves. The gate also refuses to dial loopback, private, link-local and carrier-grade NAT addresses, checked on the address actually dialed after name resolution, unless `Config.AllowNonPublic` is set.
+
+Credential injection: a rule's `Inject` names a header, the placeholder the sandbox holds, and a credential the caller's `Resolver` returns the real value of. What the gate can inject into depends on what it can see:
+
+| Request from the sandbox | Gate sees | Allow or deny | Injection |
+|--------------------------|-----------|---------------|-----------|
+| `http://host/...` through the proxy | The whole request | Yes | Yes |
+| `https://host/...` through the proxy (`CONNECT`) | Host and port only | Yes | No: the bytes are TLS, and the gate does not intercept it |
+| `http://route/...` where the rule has an `Upstream` | The whole request | Yes | Yes, and the gate forwards over TLS to the upstream |
+
+The third row is how a sandbox reaches an HTTPS API with a credential it never holds. `CONNECT` to a route is refused, since nothing could be injected. A resolver error fails the request with 502 before anything is sent. The proxy token (`Proxy-Authorization`) is never forwarded. Every decision goes to `Config.OnDecision` for an audit log, without credentials.
+
+The Docker driver joins a compartment whose spec has `Network.Proxy` to `Config.EgressNetwork` instead of `none`, after checking once that the network was created with `--internal`; a network with a route out is refused (`ErrUnsupported`), since it would let a compartment around the gate. The driver sets no proxy variables itself: the token belongs to a lease, not to the spec the pool warms by.
+
+Caveats: the token is in the sandbox's environment, so code there can read it; it is worth that lease's allowlist and injections to anyone on the egress network until revoked. Instances on one egress network can reach each other. A response can carry an injected credential back if the upstream echoes it.
 
 ## Self-Referential Agents
 
@@ -153,7 +174,7 @@ It opens no listener and exits with the command. It is not isolation: `runner.Lo
 
 ## Validated Paths
 
-- `make test` race-tests both modules, including the `isolatetest` suite against `isolate/local` and, where a Docker daemon is reachable, `isolate/docker`: sandbox confinement (traversal, list-leak), workspace confinement (symlink escapes through linked directories and files), NGAC semantics (attribute inheritance, multi-policy-class conjunction, prohibition override), the pools (bounded concurrency, FIFO backlog, `ErrFull`, drain on scale-down, retention, `Close`), policy-gated spawning, the Job runner against a fake clientset, and the CLI end to end.
+- `make test` race-tests both modules, including the `isolatetest` suite against `isolate/local` and, where a Docker daemon is reachable, `isolate/docker` and an end-to-end egress test (a sandbox on an internal network, the gate in a container, two upstreams on a second network): sandbox confinement (traversal, list-leak), workspace confinement (symlink escapes through linked directories and files), NGAC semantics (attribute inheritance, multi-policy-class conjunction, prohibition override), the pools (bounded concurrency, FIFO backlog, `ErrFull`, drain on scale-down, retention, `Close`), policy-gated spawning, the Job runner against a fake clientset, and the CLI end to end.
 - `examples/saige/` runs real [saige](https://github.com/urmzd/saige) agents as workloads, including an agent delegating to a sub-agent.
 - fiber's sandbox and Humagen's platform build on `controlplane.NewMemory` and are built against each change.
 
