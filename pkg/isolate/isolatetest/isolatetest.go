@@ -40,6 +40,10 @@ type Options struct {
 	// Isolated runs the boundary checks. Set it for every driver that
 	// claims to isolate.
 	Isolated bool
+	// NoHostMounts is for drivers whose instances cannot see this
+	// machine's directories, such as a remote daemon's: a spec with
+	// Mounts must fail with isolate.ErrUnsupported instead.
+	NoHostMounts bool
 }
 
 // Run runs the suite against d.
@@ -181,6 +185,17 @@ func (s suite) filesAreTheWorkDirectory(t *testing.T) {
 
 func (s suite) mounts(t *testing.T) {
 	project, me := s.o.TempDir(t), s.o.TempDir(t)
+	if s.o.NoHostMounts {
+		for _, m := range []isolate.Mounts{{Project: project}, {Me: me}} {
+			if inst, err := s.d.Start(context.Background(), isolate.Spec{Image: s.o.Image, Mounts: m}); !errors.Is(err, isolate.ErrUnsupported) {
+				if inst != nil {
+					_ = inst.Close(context.Background())
+				}
+				t.Errorf("mounts %+v: err = %v, want ErrUnsupported", m, err)
+			}
+		}
+		return
+	}
 	if err := os.WriteFile(filepath.Join(project, "base.txt"), []byte("base"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -350,12 +365,14 @@ func (s suite) compartments(t *testing.T) {
 }
 
 func (s suite) boundary(t *testing.T) {
-	project := s.o.TempDir(t)
 	res := isolate.Resources{CPUMillis: 500, MemoryBytes: 64 << 20, PIDs: 64, DiskBytes: 8 << 20}
-	inst := s.start(t, isolate.Spec{Mounts: isolate.Mounts{Project: project}, Resources: res})
+	spec := isolate.Spec{Resources: res}
+	if !s.o.NoHostMounts {
+		spec.Mounts.Project = s.o.TempDir(t)
+	}
+	inst := s.start(t, spec)
 	checks := []struct{ name, script string }{
 		{"root filesystem is read only", "! touch /etc/x 2>/dev/null"},
-		{"project is read only", "! touch ../project/x 2>/dev/null"},
 		{"user is not root", `[ "$(id -u)" != 0 ]`},
 		{"no capabilities", `grep -q '^CapEff:[[:space:]]*0000000000000000$' /proc/self/status`},
 		{"no new privileges", `grep -q '^NoNewPrivs:[[:space:]]*1$' /proc/self/status`},
@@ -369,6 +386,9 @@ func (s suite) boundary(t *testing.T) {
 		// cgroup v2, or the v1 layout gVisor presents.
 		{"memory limit", `f=/sys/fs/cgroup/memory.max; [ -e $f ] || f=/sys/fs/cgroup/memory/memory.limit_in_bytes; [ "$(cat $f)" = 67108864 ]`},
 		{"scratch is bounded", `! dd if=/dev/zero of=/tmp/fill bs=1048576 count=16 2>/dev/null`},
+	}
+	if spec.Mounts.Project != "" {
+		checks = append(checks, struct{ name, script string }{"project is read only", "! touch ../project/x 2>/dev/null"})
 	}
 	for _, c := range checks {
 		if r := s.sh(inst, c.script); r.err != nil || r.code != 0 {

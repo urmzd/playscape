@@ -24,7 +24,21 @@
 // through its own environment (docker exec -e NAME), never on its command
 // line, so they do not show in the host's process list.
 //
-// Orthogonality boundary: this package owns containers, one volume and one
+// # Remote daemons
+//
+// With Config.Host set, the driver drives that daemon instead of the local
+// one, for example a sandbox host reached over TLS, so the program does not
+// hold a Docker socket on its own machine. A remote daemon does not see this
+// machine's files, so the work directory is a Docker volume on the daemon's
+// machine instead of a host directory, and Files reaches it through the
+// workload container: each call is one docker exec of a small shell script,
+// run as the instance's user. Nothing outside the sandbox opens the run's
+// files, so a link the workload plants is resolved inside it. Host
+// directory mounts (Spec.Mounts) are refused with isolate.ErrUnsupported.
+// The image needs sh, cat, mkdir, dirname, rm, find and chmod (busybox has
+// them all).
+//
+// Orthogonality boundary: this package owns containers, its volumes and one
 // host directory per instance; it knows nothing about pools or runs.
 package docker
 
@@ -118,11 +132,24 @@ type Config struct {
 	// reachable on it at the spec's proxy address. Empty refuses every
 	// spec with a proxy (ErrUnsupported).
 	EgressNetwork string
+	// Host is the daemon to drive, passed to the CLI as --host:
+	// "tcp://sandbox.internal:2376", "ssh://user@sandbox" or
+	// "unix:///path/to/docker.sock". Empty means the CLI's default
+	// daemon. A set Host is treated as remote: see Remote daemons in the
+	// package doc. WorkRoot is then unused.
+	Host string
+	// TLSDir holds ca.pem, cert.pem and key.pem. With it the CLI checks
+	// the daemon's certificate and presents its own (--tlsverify). A
+	// tcp:// Host requires it: a daemon on plain TCP is root on its
+	// machine for anyone who can reach the port.
+	TLSDir string
 }
 
 // Driver starts Docker-backed instances. It is safe for concurrent use.
 type Driver struct {
 	bin      string
+	global   []string // CLI flags before every subcommand: --host and TLS
+	remote   bool     // the daemon does not share this machine's files
 	runtime  string
 	workRoot string
 	idle     []string
@@ -163,14 +190,21 @@ func New(cfg Config) (*Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("isolate: docker: %w", err)
 	}
-	if cfg.WorkRoot == "" {
-		cfg.WorkRoot = os.TempDir()
-	}
-	// Docker resolves bind sources on the daemon's side, which does not
-	// follow the host's links (/tmp and /var on macOS are links).
-	root, err := filepath.EvalSymlinks(cfg.WorkRoot)
+	global, err := hostArgs(cfg.Host, cfg.TLSDir)
 	if err != nil {
-		return nil, fmt.Errorf("isolate: docker: work root: %w", err)
+		return nil, err
+	}
+	remote := cfg.Host != ""
+	var root string
+	if !remote {
+		if cfg.WorkRoot == "" {
+			cfg.WorkRoot = os.TempDir()
+		}
+		// Docker resolves bind sources on the daemon's side, which does
+		// not follow the host's links (/tmp and /var on macOS are links).
+		if root, err = filepath.EvalSymlinks(cfg.WorkRoot); err != nil {
+			return nil, fmt.Errorf("isolate: docker: work root: %w", err)
+		}
 	}
 	if len(cfg.IdleCommand) == 0 {
 		cfg.IdleCommand = []string{"sleep", "infinity"}
@@ -178,17 +212,64 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.EgressNetwork != "" && !runtimeName.MatchString(cfg.EgressNetwork) {
 		return nil, fmt.Errorf("isolate: docker: egress network %q", cfg.EgressNetwork)
 	}
-	return &Driver{bin: bin, runtime: cfg.Runtime, workRoot: root, idle: cfg.IdleCommand, env: cliEnv(), egress: cfg.EgressNetwork}, nil
+	return &Driver{
+		bin: bin, global: global, remote: remote, runtime: cfg.Runtime, workRoot: root,
+		idle: cfg.IdleCommand, env: cliEnv(remote), egress: cfg.EgressNetwork,
+	}, nil
+}
+
+// hostArgs checks a Config's Host and TLSDir and returns the CLI flags that
+// select them.
+func hostArgs(host, tlsDir string) ([]string, error) {
+	if host == "" {
+		if tlsDir != "" {
+			return nil, errors.New("isolate: docker: TLSDir without a Host")
+		}
+		return nil, nil
+	}
+	scheme, rest, ok := strings.Cut(host, "://")
+	if !ok || rest == "" || strings.ContainsAny(host, " \t\n\x00") {
+		return nil, fmt.Errorf("isolate: docker: host %q: want tcp://, ssh:// or unix://", host)
+	}
+	switch scheme {
+	case "tcp":
+		if tlsDir == "" {
+			return nil, fmt.Errorf("isolate: docker: host %q: a tcp:// daemon needs TLSDir", host)
+		}
+	case "ssh", "unix":
+	default:
+		return nil, fmt.Errorf("isolate: docker: host %q: want tcp://, ssh:// or unix://", host)
+	}
+	args := []string{"--host", host}
+	if tlsDir == "" {
+		return args, nil
+	}
+	if !filepath.IsAbs(tlsDir) {
+		return nil, fmt.Errorf("isolate: docker: TLSDir %q: want an absolute path", tlsDir)
+	}
+	args = append(args, "--tlsverify")
+	for _, f := range []struct{ flag, file string }{{"--tlscacert", "ca.pem"}, {"--tlscert", "cert.pem"}, {"--tlskey", "key.pem"}} {
+		p := filepath.Join(tlsDir, f.file)
+		if _, err := os.Stat(p); err != nil {
+			return nil, fmt.Errorf("isolate: docker: TLSDir: %w", err)
+		}
+		args = append(args, f.flag, p)
+	}
+	return args, nil
 }
 
 // cliEnv is the environment the docker CLI runs with: the variables it
-// reads, and DOCKER_CONFIG pinned so a command's HOME cannot move it.
-func cliEnv() []string {
+// reads, and DOCKER_CONFIG pinned so a command's HOME cannot move it. With
+// remote set the daemon comes from Config alone, so the variables that
+// would pick another one are dropped.
+func cliEnv(remote bool) []string {
 	var env []string
 	hasConfig := false
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
 		switch {
+		case remote && (k == "DOCKER_HOST" || k == "DOCKER_CONTEXT" || k == "DOCKER_TLS_VERIFY" || k == "DOCKER_CERT_PATH"):
+			continue
 		case strings.HasPrefix(k, "DOCKER_"):
 			hasConfig = hasConfig || k == "DOCKER_CONFIG"
 		case k == "HOME", k == "PATH", k == "TMPDIR", k == "USER", k == "SSH_AUTH_SOCK", strings.HasPrefix(k, "XDG_"):
@@ -212,6 +293,9 @@ func (d *Driver) Start(ctx context.Context, spec isolate.Spec) (isolate.Instance
 		if err := d.egressReady(ctx); err != nil {
 			return nil, err
 		}
+	}
+	if d.remote {
+		return d.startRemote(ctx, spec)
 	}
 	mounts, err := resolveMounts(spec.Mounts)
 	if err != nil {
@@ -420,8 +504,10 @@ type instance struct {
 	workload   string // container names
 	connectors string
 	volume     string // socket volume, when there are connectors
-	work       string // host work directory
-	files      *workspace.Local
+	work       string // host work directory, with a local daemon
+	workVolume string // work volume, with a remote daemon
+	files      workspace.Workspace
+	local      *workspace.Local // files, when they are a host directory
 	pids       map[string]int64 // each container's PIDs limit, by name
 
 	mu      sync.Mutex
@@ -432,9 +518,18 @@ type instance struct {
 }
 
 func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mounts, user string) error {
-	work, err := bind(i.work, isolate.WorkDir, false)
-	if err != nil {
-		return err
+	var work string
+	if i.workVolume != "" {
+		_, err := i.d.cli(ctx, nil, "volume", "create", "--driver", "local", "--label", InstanceLabel+"="+i.id, i.workVolume)
+		if err != nil {
+			return fmt.Errorf("%w: docker: work volume: %w", isolate.ErrStart, err)
+		}
+		work = "type=volume,source=" + i.workVolume + ",target=" + isolate.WorkDir
+	} else {
+		var err error
+		if work, err = bind(i.work, isolate.WorkDir, false); err != nil {
+			return err
+		}
 	}
 	mounts := []string{work}
 	if m.Project != "" {
@@ -470,7 +565,7 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 		i.connectors = namePrefix + i.id + "-connectors"
 		connector = container{
 			name: i.connectors, compartment: isolate.Connectors, image: image,
-			user: defaultUser(c.User), resources: c.Resources, network: i.d.network(c.Network), workDir: "/tmp",
+			user: i.d.userOr(c.User), resources: c.Resources, network: i.d.network(c.Network), workDir: "/tmp",
 			mounts: []string{sock},
 		}
 	}
@@ -485,6 +580,13 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 	if err := i.d.guestPIDs(ctx, workload.name, i.pids[workload.name]); err != nil {
 		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
 	}
+	if i.workVolume != "" {
+		// A new volume is owned by root. Root in the container has no
+		// capabilities, but as the owner it may still open it up.
+		if _, err := i.d.cli(ctx, nil, "exec", "--user", "0", workload.name, "chmod", "0777", isolate.WorkDir); err != nil {
+			return fmt.Errorf("%w: docker: work volume: %w", isolate.ErrStart, err)
+		}
+	}
 	if i.connectors != "" {
 		i.pids[connector.name] = connector.resources.WithDefaults().PIDs
 		if _, err := i.d.run(ctx, i.d.runArgs(i.id, connector, spec.Labels)); err != nil {
@@ -494,11 +596,15 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 			return fmt.Errorf("%w: docker: connectors: %w", isolate.ErrStart, err)
 		}
 	}
+	if i.workVolume != "" {
+		i.files = execFiles{i: i}
+		return nil
+	}
 	files, err := workspace.NewLocal(i.work)
 	if err != nil {
 		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
 	}
-	i.files = files
+	i.files, i.local = files, files
 	return nil
 }
 
@@ -516,7 +622,7 @@ func (d *Driver) cli(ctx context.Context, extraEnv []string, args ...string) ([]
 
 // cliIn is cli with stdin as the CLI's standard input.
 func (d *Driver) cliIn(ctx context.Context, stdin io.Reader, extraEnv []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, d.bin, args...)
+	cmd := d.command(ctx, args...)
 	cmd.Env = append(append([]string{}, d.env...), extraEnv...)
 	cmd.Stdin = stdin
 	var stdout, stderr bytes.Buffer
@@ -528,6 +634,11 @@ func (d *Driver) cliIn(ctx context.Context, stdin io.Reader, extraEnv []string, 
 		return nil, fmt.Errorf("docker %s: %w", args[0], err)
 	}
 	return stdout.Bytes(), nil
+}
+
+// command is the docker CLI with the daemon flags and then args.
+func (d *Driver) command(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, d.bin, append(slices.Clip(d.global), args...)...)
 }
 
 func (i *instance) ID() string                 { return i.id }
@@ -578,7 +689,7 @@ func (i *instance) Exec(ctx context.Context, c isolate.Command, stdio isolate.St
 	timeout := c.TimeoutOrDefault()
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, i.d.bin, args...)
+	cmd := i.d.command(runCtx, args...)
 	cmd.Env = append(append([]string{}, i.d.env...), env...)
 	cmd.Stdin = stdio.Stdin
 	var mu sync.Mutex
@@ -675,15 +786,20 @@ func (i *instance) destroy(ctx context.Context) error {
 	if _, err := i.d.cli(ctx, nil, append([]string{"rm", "--force", "--volumes"}, names...)...); err != nil && !strings.Contains(err.Error(), "No such container") {
 		errs = append(errs, err)
 	}
-	if i.volume != "" {
-		if _, err := i.d.cli(ctx, nil, "volume", "rm", "--force", i.volume); err != nil {
+	for _, v := range []string{i.volume, i.workVolume} {
+		if v == "" {
+			continue
+		}
+		if _, err := i.d.cli(ctx, nil, "volume", "rm", "--force", v); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if i.files != nil {
-		errs = append(errs, i.files.Close())
+	if i.local != nil {
+		errs = append(errs, i.local.Close())
 	}
-	errs = append(errs, os.RemoveAll(i.work))
+	if i.work != "" {
+		errs = append(errs, os.RemoveAll(i.work))
+	}
 	return errors.Join(errs...)
 }
 
