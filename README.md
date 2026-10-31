@@ -215,14 +215,15 @@ if err != nil {
 pool := isolate.NewPool(drv, isolate.PoolConfig{Warm: 4, Max: 500})
 defer pool.Close(ctx)
 
-lease, err := pool.Lease(ctx, isolate.Spec{
-	Image:  "python:3.13-alpine",
-	Mounts: isolate.Mounts{Project: snapshotDir},
-})
+lease, err := pool.Lease(ctx, isolate.Spec{Image: "python:3.13-alpine"})
 if err != nil {
 	return err
 }
 defer lease.Release(ctx) // destroys the instance; it is never reused
+// /project and /me start empty in every instance; the host fills them.
+if err := lease.Project().Write(ctx, "README.md", strings.NewReader(snapshot)); err != nil {
+	return err
+}
 if err := registry.Register(runner.Shell("shell", isolate.Executor{Instance: lease}, runner.ShellConfig{})); err != nil {
 	return err
 }

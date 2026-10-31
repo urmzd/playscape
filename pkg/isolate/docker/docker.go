@@ -213,29 +213,26 @@ func (d *Driver) Start(ctx context.Context, spec isolate.Spec) (isolate.Instance
 			return nil, err
 		}
 	}
-	mounts, err := resolveMounts(spec.Mounts)
-	if err != nil {
-		return nil, err
-	}
 	user := defaultUser(spec.User)
 	id := isolate.NewID()
+	root := filepath.Join(d.workRoot, namePrefix+id)
 	inst := &instance{
 		d:        d,
 		id:       id,
 		workload: namePrefix + id,
-		work:     filepath.Join(d.workRoot, namePrefix+id),
+		root:     root,
+		work:     filepath.Join(root, "work"),
+		project:  filepath.Join(root, "project"),
+		me:       filepath.Join(root, "me"),
 	}
-	if err := os.Mkdir(inst.work, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: docker: work directory: %w", isolate.ErrStart, err)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: docker: instance directory: %w", isolate.ErrStart, err)
 	}
-	if uid, _, _ := isolate.ParseUser(user); uid != os.Getuid() {
-		// The container's user is not the directory's owner.
-		if err := os.Chmod(inst.work, 0o777); err != nil { //nolint:gosec // the run's own directory
-			os.RemoveAll(inst.work)
-			return nil, fmt.Errorf("%w: docker: work directory: %w", isolate.ErrStart, err)
-		}
+	if err := inst.layout(user); err != nil {
+		os.RemoveAll(root)
+		return nil, fmt.Errorf("%w: docker: instance directory: %w", isolate.ErrStart, err)
 	}
-	if err := inst.start(ctx, spec, mounts, user); err != nil {
+	if err := inst.start(ctx, spec, user); err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		_ = inst.destroy(cctx)
@@ -273,33 +270,6 @@ func (d *Driver) network(n isolate.Network) string {
 		return d.egress
 	}
 	return "none"
-}
-
-// resolveMounts checks that every mount is a directory and resolves links,
-// which the daemon would not follow.
-func resolveMounts(m isolate.Mounts) (isolate.Mounts, error) {
-	resolve := func(dir string) (string, error) {
-		if dir == "" {
-			return "", nil
-		}
-		resolved, err := filepath.EvalSymlinks(dir)
-		if err == nil {
-			var info os.FileInfo
-			if info, err = os.Stat(resolved); err == nil && !info.IsDir() {
-				err = errors.New("not a directory")
-			}
-		}
-		if err != nil {
-			return "", fmt.Errorf("%w: docker: mount %q: %w", isolate.ErrStart, dir, err)
-		}
-		return resolved, nil
-	}
-	var err error
-	if m.Project, err = resolve(m.Project); err != nil {
-		return m, err
-	}
-	m.Me, err = resolve(m.Me)
-	return m, err
 }
 
 // defaultUser returns user, or the default when it is empty.
@@ -420,8 +390,13 @@ type instance struct {
 	workload   string // container names
 	connectors string
 	volume     string // socket volume, when there are connectors
-	work       string // host work directory
+	root       string // host instance directory, holding the three below
+	work       string // host directories bound at WorkDir, ProjectDir and MeDir
+	project    string
+	me         string
 	files      *workspace.Local
+	projectWS  *workspace.Local
+	meWS       *workspace.Local
 	pids       map[string]int64 // each container's PIDs limit, by name
 
 	mu      sync.Mutex
@@ -431,25 +406,41 @@ type instance struct {
 	err     error
 }
 
-func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mounts, user string) error {
-	work, err := bind(i.work, isolate.WorkDir, false)
-	if err != nil {
-		return err
+// layout makes the instance's work, project and person directories. When
+// the container's user does not own them, the work and person directories
+// are opened to every user; the project directory is only ever read inside.
+func (i *instance) layout(user string) error {
+	shared := false
+	if uid, _, _ := isolate.ParseUser(user); uid != os.Getuid() {
+		shared = true
 	}
-	mounts := []string{work}
-	if m.Project != "" {
-		b, err := bind(m.Project, isolate.ProjectDir, true)
+	for _, dir := range []struct {
+		path     string
+		writable bool
+	}{{i.work, true}, {i.project, false}, {i.me, true}} {
+		if err := os.Mkdir(dir.path, 0o755); err != nil { //nolint:gosec // read inside the instance
+			return err
+		}
+		if shared && dir.writable {
+			if err := os.Chmod(dir.path, 0o777); err != nil { //nolint:gosec // the run's own directory
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (i *instance) start(ctx context.Context, spec isolate.Spec, user string) error {
+	mounts := make([]string, 0, 4)
+	for _, b := range []struct {
+		src, dst string
+		readOnly bool
+	}{{i.work, isolate.WorkDir, false}, {i.project, isolate.ProjectDir, true}, {i.me, isolate.MeDir, false}} {
+		m, err := bind(b.src, b.dst, b.readOnly)
 		if err != nil {
 			return err
 		}
-		mounts = append(mounts, b)
-	}
-	if m.Me != "" {
-		b, err := bind(m.Me, isolate.MeDir, false)
-		if err != nil {
-			return err
-		}
-		mounts = append(mounts, b)
+		mounts = append(mounts, m)
 	}
 	var connector container
 	if c := spec.Connectors; c != nil {
@@ -494,11 +485,13 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 			return fmt.Errorf("%w: docker: connectors: %w", isolate.ErrStart, err)
 		}
 	}
-	files, err := workspace.NewLocal(i.work)
-	if err != nil {
-		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
+	for dir, ws := range map[string]**workspace.Local{i.work: &i.files, i.project: &i.projectWS, i.me: &i.meWS} {
+		l, err := workspace.NewLocal(dir)
+		if err != nil {
+			return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
+		}
+		*ws = l
 	}
-	i.files = files
 	return nil
 }
 
@@ -532,6 +525,13 @@ func (d *Driver) cliIn(ctx context.Context, stdin io.Reader, extraEnv []string, 
 
 func (i *instance) ID() string                 { return i.id }
 func (i *instance) Files() workspace.Workspace { return i.files }
+
+// Project implements isolate.Instance: the host directory bound read only
+// at ProjectDir.
+func (i *instance) Project() workspace.Workspace { return i.projectWS }
+
+// Me implements isolate.Instance: the host directory bound at MeDir.
+func (i *instance) Me() workspace.Workspace { return i.meWS }
 
 // Exec implements isolate.Instance. A command that times out or whose ctx
 // ends restarts its compartment: docker exec cannot end the processes it
@@ -649,7 +649,7 @@ func (i *instance) isClosed() bool {
 }
 
 // Close implements isolate.Instance: it removes the containers and the
-// socket volume, then the work directory.
+// socket volume, then the instance's directories.
 func (i *instance) Close(ctx context.Context) error {
 	i.once.Do(func() {
 		i.mu.Lock()
@@ -680,10 +680,12 @@ func (i *instance) destroy(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	if i.files != nil {
-		errs = append(errs, i.files.Close())
+	for _, ws := range []*workspace.Local{i.files, i.projectWS, i.meWS} {
+		if ws != nil {
+			errs = append(errs, ws.Close())
+		}
 	}
-	errs = append(errs, os.RemoveAll(i.work))
+	errs = append(errs, os.RemoveAll(i.root))
 	return errors.Join(errs...)
 }
 

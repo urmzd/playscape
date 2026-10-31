@@ -5,15 +5,17 @@
 //
 // An instance mirrors a small filesystem layout. The run's own files are at
 // WorkDir, read and write, and are what Files exposes to the host. A
-// project's base snapshot is at ProjectDir, read only, and a person's volume
-// at MeDir, read and write. SocketDir is the one directory the workload and
-// its connectors compartment share. Commands start in WorkDir, so the other
-// mounts are also reachable as "../project", "../me" and "../run/playscape",
+// project's base snapshot is at ProjectDir, read only inside, and a person's
+// volume at MeDir, read and write. Both start empty: each instance has its
+// own, and the host fills them through Project and Me after the lease, so
+// they never change what a spec is or which warm instance it gets.
+// SocketDir is the one directory the workload and its connectors
+// compartment share. Commands start in WorkDir, so the other mounts are also reachable as "../project", "../me" and "../run/playscape",
 // which is how drivers without a mount namespace (package isolate/local)
 // offer the same layout.
 //
 // The zero value of every Spec field is the most restrictive choice: no
-// network, no mounts but the work directory, no connectors compartment, a
+// network, no host directories mounted, no connectors compartment, a
 // non-root user, and small default resource limits. Nothing is unlimited.
 //
 // Orthogonality boundary: isolate knows nothing about tools, queues, nodes
@@ -33,7 +35,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -110,6 +111,14 @@ type Instance interface {
 	// Files is the instance's work directory as a workspace, for the
 	// host to seed inputs and collect outputs. It is valid until Close.
 	Files() workspace.Workspace
+	// Project is the instance's ProjectDir as a workspace. It starts
+	// empty. The host writes it; the workload can only read it. It is
+	// valid until Close, which removes it.
+	Project() workspace.Workspace
+	// Me is the instance's MeDir as a workspace. It starts empty. The
+	// host fills it with the person's files and reads back what the run
+	// changed. It is valid until Close, which removes it.
+	Me() workspace.Workspace
 	// Close stops every process in the instance and destroys it with its
 	// work directory. Calling it again returns the first result.
 	Close(ctx context.Context) error
@@ -121,9 +130,6 @@ type Spec struct {
 	// Image is the root filesystem: a container image for container
 	// drivers. Required. The root filesystem is always read only.
 	Image string
-	// Mounts are the host directories the instance sees besides its own
-	// work directory.
-	Mounts Mounts
 	// Resources bounds the workload compartment.
 	Resources Resources
 	// Network is the workload's network. The zero value is none at all.
@@ -139,16 +145,6 @@ type Spec struct {
 	// tool servers. It shares SocketDir with the workload and nothing
 	// else: no files, no processes, no network.
 	Connectors *ConnectorSpec
-}
-
-// Mounts are host directories mounted into the workload compartment. Each
-// must be an absolute path to an existing directory; empty mounts nothing.
-type Mounts struct {
-	// Project is mounted read only at ProjectDir.
-	Project string
-	// Me is mounted read and write at MeDir. Mount a person's volume only
-	// in that person's runs.
-	Me string
 }
 
 // Resources bounds a compartment. A zero field means its Default value;
@@ -253,19 +249,10 @@ func (c Compartment) String() string {
 	return "compartment(" + strconv.Itoa(int(c)) + ")"
 }
 
-// Validate reports whether s is well formed. It does not check that mounted
-// directories exist; drivers do that at Start.
+// Validate reports whether s is well formed.
 func (s Spec) Validate() error {
 	if err := validImage(s.Image); err != nil {
 		return err
-	}
-	for name, dir := range map[string]string{"project": s.Mounts.Project, "me": s.Mounts.Me} {
-		if dir != "" && (!filepath.IsAbs(dir) || filepath.Clean(dir) != dir) {
-			return fmt.Errorf("%w: %s mount %q: want a clean absolute path", ErrInvalidSpec, name, dir)
-		}
-	}
-	if s.Mounts.Project != "" && s.Mounts.Project == s.Mounts.Me {
-		return fmt.Errorf("%w: the project and the person volume are the same directory", ErrInvalidSpec)
 	}
 	if err := s.Resources.validate(); err != nil {
 		return err

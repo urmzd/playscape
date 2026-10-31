@@ -65,8 +65,10 @@ type fakeInstance struct {
 	closes atomic.Int32
 }
 
-func (i *fakeInstance) ID() string                 { return i.id }
-func (i *fakeInstance) Files() workspace.Workspace { return nil }
+func (i *fakeInstance) ID() string                   { return i.id }
+func (i *fakeInstance) Files() workspace.Workspace   { return nil }
+func (i *fakeInstance) Project() workspace.Workspace { return nil }
+func (i *fakeInstance) Me() workspace.Workspace      { return nil }
 func (i *fakeInstance) Exec(context.Context, Command, Stdio) (ExitStatus, error) {
 	if i.closes.Load() > 0 {
 		return ExitStatus{}, ErrClosed
