@@ -10,7 +10,6 @@ func TestSpecValidate(t *testing.T) {
 		{Image: "img"},
 		{Image: "img", User: "1000"},
 		{Image: "img", User: "1000:1000"},
-		{Image: "img", Mounts: Mounts{Project: "/p", Me: "/m"}},
 		{Image: "img", Network: Network{Proxy: "gate:3128"}},
 		{Image: "img", Network: Network{Proxy: "[::1]:3128"}},
 		{Image: "img", Labels: map[string]string{"team": "a"}},
@@ -29,9 +28,6 @@ func TestSpecValidate(t *testing.T) {
 		"root user":          {Image: "img", User: "0"},
 		"root group":         {Image: "img", User: "1000:0"},
 		"named user":         {Image: "img", User: "root"},
-		"relative mount":     {Image: "img", Mounts: Mounts{Project: "p"}},
-		"unclean mount":      {Image: "img", Mounts: Mounts{Me: "/a/../b"}},
-		"same mounts":        {Image: "img", Mounts: Mounts{Project: "/x", Me: "/x"}},
 		"negative memory":    {Image: "img", Resources: Resources{MemoryBytes: -1}},
 		"proxy without port": {Image: "img", Network: Network{Proxy: "gate"}},
 		"proxy url":          {Image: "img", Network: Network{Proxy: "http://gate:3128"}},
@@ -67,7 +63,6 @@ func TestSpecKey(t *testing.T) {
 	}
 	for _, other := range []Spec{
 		{Image: "img2", Labels: a.Labels},
-		{Image: "img", Labels: a.Labels, Mounts: Mounts{Me: "/me/ada"}},
 		{Image: "img", Labels: a.Labels, Connectors: &ConnectorSpec{}},
 	} {
 		if other.Key() == a.Key() {

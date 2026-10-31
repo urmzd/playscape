@@ -29,17 +29,18 @@
 // With Config.Host set, the driver drives that daemon instead of the local
 // one, for example a sandbox host reached over TLS, so the program does not
 // hold a Docker socket on its own machine. A remote daemon does not see this
-// machine's files, so the work directory is a Docker volume on the daemon's
-// machine instead of a host directory, and Files reaches it through the
-// workload container: each call is one docker exec of a small shell script,
-// run as the instance's user. Nothing outside the sandbox opens the run's
-// files, so a link the workload plants is resolved inside it. Host
-// directory mounts (Spec.Mounts) are refused with isolate.ErrUnsupported.
-// The image needs sh, cat, mkdir, dirname, rm, find and chmod (busybox has
-// them all).
+// machine's files, so the work, project and person directories are Docker
+// volumes on the daemon's machine instead of host directories, and Files,
+// Project and Me reach them through the workload container: each call is
+// one docker exec of a small shell script. Nothing outside the sandbox
+// opens the run's files, so a link the workload plants is resolved inside
+// it. The project volume is owned by root, which in the container has no
+// capabilities: the host writes it as root, and the workload's non-root
+// user can only read it. The image needs sh, cat, mkdir, dirname, rm, find
+// and chmod (busybox has them all).
 //
-// Orthogonality boundary: this package owns containers, its volumes and one
-// host directory per instance; it knows nothing about pools or runs.
+// Orthogonality boundary: this package owns containers, their volumes and
+// one host directory per instance; it knows nothing about pools or runs.
 package docker
 
 import (
@@ -148,8 +149,9 @@ type Config struct {
 // Driver starts Docker-backed instances. It is safe for concurrent use.
 type Driver struct {
 	bin      string
-	global   []string // CLI flags before every subcommand: --host and TLS
-	remote   bool     // the daemon does not share this machine's files
+	global   []string        // CLI flags before every subcommand: --host and TLS
+	remote   bool            // the daemon does not share this machine's files
+	track    func(id string) // tests only: told each instance ID before it is used
 	runtime  string
 	workRoot string
 	idle     []string
@@ -297,29 +299,26 @@ func (d *Driver) Start(ctx context.Context, spec isolate.Spec) (isolate.Instance
 	if d.remote {
 		return d.startRemote(ctx, spec)
 	}
-	mounts, err := resolveMounts(spec.Mounts)
-	if err != nil {
-		return nil, err
-	}
 	user := defaultUser(spec.User)
-	id := isolate.NewID()
+	id := d.newID()
+	root := filepath.Join(d.workRoot, namePrefix+id)
 	inst := &instance{
 		d:        d,
 		id:       id,
 		workload: namePrefix + id,
-		work:     filepath.Join(d.workRoot, namePrefix+id),
+		root:     root,
+		work:     filepath.Join(root, "work"),
+		project:  filepath.Join(root, "project"),
+		me:       filepath.Join(root, "me"),
 	}
-	if err := os.Mkdir(inst.work, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: docker: work directory: %w", isolate.ErrStart, err)
+	if err := os.Mkdir(root, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: docker: instance directory: %w", isolate.ErrStart, err)
 	}
-	if uid, _, _ := isolate.ParseUser(user); uid != os.Getuid() {
-		// The container's user is not the directory's owner.
-		if err := os.Chmod(inst.work, 0o777); err != nil { //nolint:gosec // the run's own directory
-			os.RemoveAll(inst.work)
-			return nil, fmt.Errorf("%w: docker: work directory: %w", isolate.ErrStart, err)
-		}
+	if err := inst.layout(user); err != nil {
+		os.RemoveAll(root)
+		return nil, fmt.Errorf("%w: docker: instance directory: %w", isolate.ErrStart, err)
 	}
-	if err := inst.start(ctx, spec, mounts, user); err != nil {
+	if err := inst.start(ctx, spec, user); err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		_ = inst.destroy(cctx)
@@ -357,33 +356,6 @@ func (d *Driver) network(n isolate.Network) string {
 		return d.egress
 	}
 	return "none"
-}
-
-// resolveMounts checks that every mount is a directory and resolves links,
-// which the daemon would not follow.
-func resolveMounts(m isolate.Mounts) (isolate.Mounts, error) {
-	resolve := func(dir string) (string, error) {
-		if dir == "" {
-			return "", nil
-		}
-		resolved, err := filepath.EvalSymlinks(dir)
-		if err == nil {
-			var info os.FileInfo
-			if info, err = os.Stat(resolved); err == nil && !info.IsDir() {
-				err = errors.New("not a directory")
-			}
-		}
-		if err != nil {
-			return "", fmt.Errorf("%w: docker: mount %q: %w", isolate.ErrStart, dir, err)
-		}
-		return resolved, nil
-	}
-	var err error
-	if m.Project, err = resolve(m.Project); err != nil {
-		return m, err
-	}
-	m.Me, err = resolve(m.Me)
-	return m, err
 }
 
 // defaultUser returns user, or the default when it is empty.
@@ -504,11 +476,17 @@ type instance struct {
 	workload   string // container names
 	connectors string
 	volume     string // socket volume, when there are connectors
-	work       string // host work directory, with a local daemon
-	workVolume string // work volume, with a remote daemon
+	root       string // host instance directory, holding the three below
+	work       string // host directories bound at WorkDir, ProjectDir and MeDir
+	project    string
+	me         string
+	remote     bool     // the directories below are volumes, not host directories
+	volumes    []string // the work, project and person volumes, when remote
 	files      workspace.Workspace
-	local      *workspace.Local // files, when they are a host directory
-	pids       map[string]int64 // each container's PIDs limit, by name
+	projectWS  workspace.Workspace
+	meWS       workspace.Workspace
+	locals     []*workspace.Local // the workspaces above, when local
+	pids       map[string]int64   // each container's PIDs limit, by name
 
 	mu      sync.Mutex
 	closed  bool
@@ -517,34 +495,49 @@ type instance struct {
 	err     error
 }
 
-func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mounts, user string) error {
-	var work string
-	if i.workVolume != "" {
-		_, err := i.d.cli(ctx, nil, "volume", "create", "--driver", "local", "--label", InstanceLabel+"="+i.id, i.workVolume)
-		if err != nil {
-			return fmt.Errorf("%w: docker: work volume: %w", isolate.ErrStart, err)
+// layout makes the instance's work, project and person directories. When
+// the container's user does not own them, the work and person directories
+// are opened to every user; the project directory is only ever read inside.
+func (i *instance) layout(user string) error {
+	shared := false
+	if uid, _, _ := isolate.ParseUser(user); uid != os.Getuid() {
+		shared = true
+	}
+	for _, dir := range []struct {
+		path     string
+		writable bool
+	}{{i.work, true}, {i.project, false}, {i.me, true}} {
+		if err := os.Mkdir(dir.path, 0o755); err != nil { //nolint:gosec // read inside the instance
+			return err
 		}
-		work = "type=volume,source=" + i.workVolume + ",target=" + isolate.WorkDir
+		if shared && dir.writable {
+			if err := os.Chmod(dir.path, 0o777); err != nil { //nolint:gosec // the run's own directory
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (i *instance) start(ctx context.Context, spec isolate.Spec, user string) error {
+	mounts := make([]string, 0, 4)
+	if i.remote {
+		m, err := i.createVolumes(ctx)
+		if err != nil {
+			return err
+		}
+		mounts = append(mounts, m...)
 	} else {
-		var err error
-		if work, err = bind(i.work, isolate.WorkDir, false); err != nil {
-			return err
+		for _, b := range []struct {
+			src, dst string
+			readOnly bool
+		}{{i.work, isolate.WorkDir, false}, {i.project, isolate.ProjectDir, true}, {i.me, isolate.MeDir, false}} {
+			m, err := bind(b.src, b.dst, b.readOnly)
+			if err != nil {
+				return err
+			}
+			mounts = append(mounts, m)
 		}
-	}
-	mounts := []string{work}
-	if m.Project != "" {
-		b, err := bind(m.Project, isolate.ProjectDir, true)
-		if err != nil {
-			return err
-		}
-		mounts = append(mounts, b)
-	}
-	if m.Me != "" {
-		b, err := bind(m.Me, isolate.MeDir, false)
-		if err != nil {
-			return err
-		}
-		mounts = append(mounts, b)
 	}
 	var connector container
 	if c := spec.Connectors; c != nil {
@@ -580,11 +573,12 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 	if err := i.d.guestPIDs(ctx, workload.name, i.pids[workload.name]); err != nil {
 		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
 	}
-	if i.workVolume != "" {
-		// A new volume is owned by root. Root in the container has no
-		// capabilities, but as the owner it may still open it up.
-		if _, err := i.d.cli(ctx, nil, "exec", "--user", "0", workload.name, "chmod", "0777", isolate.WorkDir); err != nil {
-			return fmt.Errorf("%w: docker: work volume: %w", isolate.ErrStart, err)
+	if i.remote {
+		// New volumes are owned by root. Root in the container has no
+		// capabilities, but as the owner it may still open the work and
+		// person volumes to the workload. The project volume stays root's.
+		if _, err := i.d.cli(ctx, nil, "exec", "--user", "0", workload.name, "chmod", "0777", isolate.WorkDir, isolate.MeDir); err != nil {
+			return fmt.Errorf("%w: docker: volumes: %w", isolate.ErrStart, err)
 		}
 	}
 	if i.connectors != "" {
@@ -596,15 +590,20 @@ func (i *instance) start(ctx context.Context, spec isolate.Spec, m isolate.Mount
 			return fmt.Errorf("%w: docker: connectors: %w", isolate.ErrStart, err)
 		}
 	}
-	if i.workVolume != "" {
-		i.files = execFiles{i: i}
+	if i.remote {
+		i.files = execFiles{i: i, dir: isolate.WorkDir}
+		i.projectWS = execFiles{i: i, dir: isolate.ProjectDir, root: true}
+		i.meWS = execFiles{i: i, dir: isolate.MeDir}
 		return nil
 	}
-	files, err := workspace.NewLocal(i.work)
-	if err != nil {
-		return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
+	for dir, ws := range map[string]*workspace.Workspace{i.work: &i.files, i.project: &i.projectWS, i.me: &i.meWS} {
+		l, err := workspace.NewLocal(dir)
+		if err != nil {
+			return fmt.Errorf("%w: docker: %w", isolate.ErrStart, err)
+		}
+		*ws = l
+		i.locals = append(i.locals, l)
 	}
-	i.files, i.local = files, files
 	return nil
 }
 
@@ -636,6 +635,15 @@ func (d *Driver) cliIn(ctx context.Context, stdin io.Reader, extraEnv []string, 
 	return stdout.Bytes(), nil
 }
 
+// newID returns a new instance ID and tells the test hook about it.
+func (d *Driver) newID() string {
+	id := isolate.NewID()
+	if d.track != nil {
+		d.track(id)
+	}
+	return id
+}
+
 // command is the docker CLI with the daemon flags and then args.
 func (d *Driver) command(ctx context.Context, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, d.bin, append(slices.Clip(d.global), args...)...)
@@ -643,6 +651,13 @@ func (d *Driver) command(ctx context.Context, args ...string) *exec.Cmd {
 
 func (i *instance) ID() string                 { return i.id }
 func (i *instance) Files() workspace.Workspace { return i.files }
+
+// Project implements isolate.Instance: the host directory bound read only
+// at ProjectDir.
+func (i *instance) Project() workspace.Workspace { return i.projectWS }
+
+// Me implements isolate.Instance: the host directory bound at MeDir.
+func (i *instance) Me() workspace.Workspace { return i.meWS }
 
 // Exec implements isolate.Instance. A command that times out or whose ctx
 // ends restarts its compartment: docker exec cannot end the processes it
@@ -760,7 +775,7 @@ func (i *instance) isClosed() bool {
 }
 
 // Close implements isolate.Instance: it removes the containers and the
-// socket volume, then the work directory.
+// socket volume, then the instance's directories.
 func (i *instance) Close(ctx context.Context) error {
 	i.once.Do(func() {
 		i.mu.Lock()
@@ -786,7 +801,7 @@ func (i *instance) destroy(ctx context.Context) error {
 	if _, err := i.d.cli(ctx, nil, append([]string{"rm", "--force", "--volumes"}, names...)...); err != nil && !strings.Contains(err.Error(), "No such container") {
 		errs = append(errs, err)
 	}
-	for _, v := range []string{i.volume, i.workVolume} {
+	for _, v := range append([]string{i.volume}, i.volumes...) {
 		if v == "" {
 			continue
 		}
@@ -794,11 +809,11 @@ func (i *instance) destroy(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	if i.local != nil {
-		errs = append(errs, i.local.Close())
+	for _, l := range i.locals {
+		errs = append(errs, l.Close())
 	}
-	if i.work != "" {
-		errs = append(errs, os.RemoveAll(i.work))
+	if i.root != "" {
+		errs = append(errs, os.RemoveAll(i.root))
 	}
 	return errors.Join(errs...)
 }

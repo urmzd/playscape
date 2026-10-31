@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -239,6 +240,7 @@ func dockerDriver(t *testing.T, cfg Config) (*Driver, isolatetest.Options) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.track = func(id string) { started.Store(id, true) }
 	return d, isolatetest.Options{
 		Image:    image,
 		Env:      map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin"},
@@ -292,12 +294,15 @@ func TestCloseRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	work := inst.(*instance).work
+	root := inst.(*instance).root
+	if err := inst.Me().Write(context.Background(), "memory/note.md", strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
 	if err := inst.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("work directory survived: %v", err)
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("instance directory survived: %v", err)
 	}
 	assertNoLeftovers(t, d)
 }
@@ -333,21 +338,29 @@ func TestPoolOverDocker(t *testing.T) {
 	assertNoLeftovers(t, d)
 }
 
-// assertNoLeftovers checks that no playscape container, volume or work
-// directory is left. The docker tests run one at a time, so any container
-// with the instance label is a leak.
+// started holds every instance ID this test process's drivers made, so
+// assertNoLeftovers ignores containers another process (a parallel run in
+// another checkout) owns on the same daemon.
+var started sync.Map
+
+// assertNoLeftovers checks that no container, volume or work directory of
+// an instance this process started is left. The docker tests in one
+// process run one at a time, so any of them still there is a leak.
 func assertNoLeftovers(t *testing.T, d *Driver) {
 	t.Helper()
 	for _, args := range [][]string{
-		{"ps", "--all", "--filter", "label=" + InstanceLabel, "--format", "{{.Names}}"},
-		{"volume", "ls", "--filter", "label=" + InstanceLabel, "--format", "{{.Name}}"},
+		{"ps", "--all", "--filter", "label=" + InstanceLabel, "--format", `{{.Names}} {{.Label "` + InstanceLabel + `"}}`},
+		{"volume", "ls", "--filter", "label=" + InstanceLabel, "--format", `{{.Name}} {{.Label "` + InstanceLabel + `"}}`},
 	} {
 		out, err := exec.Command("docker", args...).Output()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if left := strings.TrimSpace(string(out)); left != "" {
-			t.Errorf("left behind: %s", left)
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			name, id, _ := strings.Cut(line, " ")
+			if _, ours := started.Load(id); ours {
+				t.Errorf("left behind: %s", name)
+			}
 		}
 	}
 	if entries, _ := os.ReadDir(d.workRoot); len(entries) > 0 {
@@ -394,15 +407,9 @@ func TestHostArgs(t *testing.T) {
 	}
 }
 
-// A remote daemon cannot see this machine's directories, so a spec that
-// mounts one is refused before anything starts.
-func TestRemoteRefusesHostMounts(t *testing.T) {
+// A remote daemon does not share this machine's users.
+func TestRemoteDefaultUser(t *testing.T) {
 	d := &Driver{bin: "docker", runtime: RuntimeRunc, remote: true}
-	for _, m := range []isolate.Mounts{{Project: "/p"}, {Me: "/m"}} {
-		if _, err := d.Start(context.Background(), isolate.Spec{Image: "img", Mounts: m}); !errors.Is(err, isolate.ErrUnsupported) {
-			t.Errorf("%+v: err = %v, want ErrUnsupported", m, err)
-		}
-	}
 	if got := d.userOr(""); got != DefaultUser {
 		t.Errorf("remote default user %q, want %s", got, DefaultUser)
 	}
@@ -421,7 +428,6 @@ func remoteDriver(t *testing.T) (*Driver, isolatetest.Options) {
 	if !d.remote {
 		t.Fatal("the driver is not remote")
 	}
-	opts.NoHostMounts = true
 	return d, opts
 }
 

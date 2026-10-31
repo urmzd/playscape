@@ -26,26 +26,37 @@ func (d *Driver) userOr(user string) string {
 	return defaultUser(user)
 }
 
-// startRemote starts an instance on a remote daemon: the work directory is
-// a volume on the daemon's machine, and no host directory is mounted.
+// startRemote starts an instance on a remote daemon: its work, project and
+// person directories are volumes on the daemon's machine.
 func (d *Driver) startRemote(ctx context.Context, spec isolate.Spec) (isolate.Instance, error) {
-	if spec.Mounts != (isolate.Mounts{}) {
-		return nil, fmt.Errorf("%w: docker: a remote daemon cannot mount this machine's directories", isolate.ErrUnsupported)
-	}
-	id := isolate.NewID()
-	inst := &instance{
-		d:          d,
-		id:         id,
-		workload:   namePrefix + id,
-		workVolume: namePrefix + id + "-work",
-	}
-	if err := inst.start(ctx, spec, isolate.Mounts{}, d.userOr(spec.User)); err != nil {
+	id := d.newID()
+	inst := &instance{d: d, id: id, workload: namePrefix + id, remote: true}
+	if err := inst.start(ctx, spec, d.userOr(spec.User)); err != nil {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
 		_ = inst.destroy(cctx)
 		return nil, err
 	}
 	return inst, nil
+}
+
+// createVolumes creates a remote instance's work, project and person
+// volumes and returns their --mount values. The project volume is mounted
+// read and write so the host can fill it as root; the workload's user
+// cannot write it, because root owns it.
+func (i *instance) createVolumes(ctx context.Context) ([]string, error) {
+	var mounts []string
+	for _, v := range []struct{ name, target string }{
+		{"work", isolate.WorkDir}, {"project", isolate.ProjectDir}, {"me", isolate.MeDir},
+	} {
+		name := namePrefix + i.id + "-" + v.name
+		if _, err := i.d.cli(ctx, nil, "volume", "create", "--driver", "local", "--label", InstanceLabel+"="+i.id, name); err != nil {
+			return nil, fmt.Errorf("%w: docker: %s volume: %w", isolate.ErrStart, v.name, err)
+		}
+		i.volumes = append(i.volumes, name)
+		mounts = append(mounts, "type=volume,source="+name+",target="+v.target)
+	}
+	return mounts, nil
 }
 
 // Exit codes the file scripts use.
@@ -56,8 +67,10 @@ const (
 // File scripts. Keys reach them as arguments, never in the script text.
 // A key must be a regular file, not a link, as with workspace.Local.
 const (
+	// Files the host writes are readable by the workload whatever the
+	// image's umask.
+	writeScript  = `umask 022 && mkdir -p -- "$(dirname -- "$1")" && rm -f -- "$1" && exec cat > "$1"`
 	readScript   = `[ -f "$1" ] && [ ! -L "$1" ] || exit 3; exec cat -- "$1"`
-	writeScript  = `mkdir -p -- "$(dirname -- "$1")" && rm -f -- "$1" && exec cat > "$1"`
 	deleteScript = `[ -f "$1" ] && [ ! -L "$1" ] || exit 3; exec rm -f -- "$1"`
 	listScript   = `exec find . -type f -print0`
 )
@@ -68,11 +81,16 @@ const (
 	maxListBytes = 16 << 20
 )
 
-// execFiles is a remote instance's work directory, reached through its
-// workload container: each call is one docker exec of a shell script, as
-// the instance's user, in /work. The host never opens the files, so a link
-// the workload plants is followed, if at all, inside the sandbox.
-type execFiles struct{ i *instance }
+// execFiles is one of a remote instance's directories, reached through its
+// workload container: each call is one docker exec of a shell script in
+// dir, as the instance's user, or as root for the project volume. The host
+// never opens the files, so a link the workload plants is followed, if at
+// all, inside the sandbox.
+type execFiles struct {
+	i    *instance
+	dir  string
+	root bool // run as root: the project volume, which only root may write
+}
 
 var _ workspace.Workspace = execFiles{}
 
@@ -92,7 +110,10 @@ func (f execFiles) run(ctx context.Context, stdin io.Reader, stdout io.Writer, s
 
 	ctx, cancel := context.WithTimeout(ctx, filesTimeout)
 	defer cancel()
-	argv := []string{"exec", "--workdir", isolate.WorkDir}
+	argv := []string{"exec", "--workdir", f.dir}
+	if f.root {
+		argv = append(argv, "--user", "0")
+	}
 	if stdin != nil {
 		argv = append(argv, "--interactive")
 	}
