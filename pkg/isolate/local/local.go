@@ -8,8 +8,8 @@
 // project, the person volume and the socket directory reachable as
 // "../project", "../me" and "../run/playscape"), an environment of exactly
 // the command's variables, timeouts that end every process a command
-// started, and removal of the directory at Close. What it does not: read-only
-// mounts or root, network limits, a non-root user, resource limits, or any
+// started, and removal of the directory at Close. What it does not: a
+// read-only project directory or root, network limits, a non-root user, resource limits, or any
 // separation between the workload and connectors compartments. Every Start
 // says so on Driver.Log.
 //
@@ -48,20 +48,11 @@ type Driver struct {
 
 var _ isolate.Driver = Driver{}
 
-// Start implements isolate.Driver. It validates spec and checks that its
-// mounts exist, then lays out a fresh directory. It enforces none of the
-// spec's limits and says so on d.Log.
+// Start implements isolate.Driver. It validates spec, then lays out a fresh
+// directory. It enforces none of the spec's limits and says so on d.Log.
 func (d Driver) Start(_ context.Context, spec isolate.Spec) (isolate.Instance, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, err
-	}
-	for _, dir := range []string{spec.Mounts.Project, spec.Mounts.Me} {
-		if dir == "" {
-			continue
-		}
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			return nil, fmt.Errorf("%w: mount %q is not a directory", isolate.ErrStart, dir)
-		}
 	}
 	id := isolate.NewID()
 	root, err := os.MkdirTemp(d.Dir, "playscape-"+id+"-")
@@ -69,7 +60,8 @@ func (d Driver) Start(_ context.Context, spec isolate.Spec) (isolate.Instance, e
 		return nil, fmt.Errorf("%w: local: %w", isolate.ErrStart, err)
 	}
 	inst := &instance{id: id, root: root, connectors: spec.Connectors != nil, done: make(chan struct{})}
-	if err := inst.layout(spec); err != nil {
+	if err := inst.layout(); err != nil {
+		_ = closeAll(inst.files, inst.project, inst.me)
 		os.RemoveAll(root)
 		return nil, fmt.Errorf("%w: local: %w", isolate.ErrStart, err)
 	}
@@ -86,6 +78,8 @@ type instance struct {
 	root       string
 	connectors bool // the spec asked for a connectors compartment
 	files      *workspace.Local
+	project    *workspace.Local
+	me         *workspace.Local
 
 	mu      sync.Mutex
 	closed  bool
@@ -95,30 +89,30 @@ type instance struct {
 	err     error
 }
 
-func (i *instance) layout(spec isolate.Spec) error {
-	for _, dir := range []string{"work", "tmp", "connectors", filepath.Join("run", "playscape")} {
+func (i *instance) layout() error {
+	for _, dir := range []string{"work", "project", "me", "tmp", "connectors", filepath.Join("run", "playscape")} {
 		if err := os.MkdirAll(filepath.Join(i.root, dir), 0o700); err != nil {
 			return err
 		}
 	}
-	for name, target := range map[string]string{"project": spec.Mounts.Project, "me": spec.Mounts.Me} {
-		if target == "" {
-			continue
-		}
-		if err := os.Symlink(target, filepath.Join(i.root, name)); err != nil {
+	for dir, ws := range map[string]**workspace.Local{"work": &i.files, "project": &i.project, "me": &i.me} {
+		l, err := workspace.NewLocal(filepath.Join(i.root, dir))
+		if err != nil {
 			return err
 		}
+		*ws = l
 	}
-	files, err := workspace.NewLocal(filepath.Join(i.root, "work"))
-	if err != nil {
-		return err
-	}
-	i.files = files
 	return nil
 }
 
 func (i *instance) ID() string                 { return i.id }
 func (i *instance) Files() workspace.Workspace { return i.files }
+
+// Project implements isolate.Instance. Nothing stops a command writing it.
+func (i *instance) Project() workspace.Workspace { return i.project }
+
+// Me implements isolate.Instance.
+func (i *instance) Me() workspace.Workspace { return i.me }
 
 // Exec implements isolate.Instance.
 func (i *instance) Exec(ctx context.Context, c isolate.Command, stdio isolate.Stdio) (isolate.ExitStatus, error) {
@@ -196,8 +190,8 @@ func streams(s isolate.Stdio) (io.Writer, io.Writer) {
 }
 
 // Close implements isolate.Instance: it ends every running command, waits
-// for them, and removes the instance directory. Mounted directories are
-// links, so removing the instance never touches them.
+// for them, and removes the instance directory with its project and person
+// directories.
 func (i *instance) Close(context.Context) error {
 	i.once.Do(func() {
 		i.mu.Lock()
@@ -205,10 +199,21 @@ func (i *instance) Close(context.Context) error {
 		i.mu.Unlock()
 		close(i.done)
 		i.running.Wait()
-		i.err = errors.Join(i.files.Close(), os.RemoveAll(i.root))
+		i.err = errors.Join(closeAll(i.files, i.project, i.me), os.RemoveAll(i.root))
 		if i.err != nil {
 			i.err = fmt.Errorf("isolate: local: close %s: %w", i.id, i.err)
 		}
 	})
 	return i.err
+}
+
+// closeAll closes the workspaces that were opened.
+func closeAll(ws ...*workspace.Local) error {
+	var errs []error
+	for _, w := range ws {
+		if w != nil {
+			errs = append(errs, w.Close())
+		}
+	}
+	return errors.Join(errs...)
 }

@@ -16,8 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +23,7 @@ import (
 	"time"
 
 	"github.com/urmzd/playscape/pkg/isolate"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 // Options configures Run.
@@ -34,8 +33,9 @@ type Options struct {
 	Image string
 	// Env is added to every command's environment (PATH, typically).
 	Env map[string]string
-	// TempDir makes a host directory the driver can mount; nil means
-	// t.TempDir.
+	// TempDir makes a host directory the driver can reach, for a driver's
+	// own tests beside the suite (a daemon may see only some host
+	// directories); nil means t.TempDir.
 	TempDir func(t testing.TB) string
 	// Isolated runs the boundary checks. Set it for every driver that
 	// claims to isolate.
@@ -45,14 +45,11 @@ type Options struct {
 // Run runs the suite against d.
 func Run(t *testing.T, d isolate.Driver, opts Options) {
 	s := suite{d: d, o: opts}
-	if s.o.TempDir == nil {
-		s.o.TempDir = func(t testing.TB) string { return t.TempDir() }
-	}
 	t.Run("ExitCodeAndStreams", s.exitCodeAndStreams)
 	t.Run("Stdin", s.stdin)
 	t.Run("EnvIsNotInherited", s.envIsNotInherited)
 	t.Run("FilesAreTheWorkDirectory", s.filesAreTheWorkDirectory)
-	t.Run("Mounts", s.mounts)
+	t.Run("ProjectAndMe", s.projectAndMe)
 	t.Run("TimeoutEndsTheCommand", s.timeout)
 	t.Run("ConcurrentExec", s.concurrent)
 	t.Run("Close", s.close)
@@ -179,23 +176,52 @@ func (s suite) filesAreTheWorkDirectory(t *testing.T) {
 	}
 }
 
-func (s suite) mounts(t *testing.T) {
-	project, me := s.o.TempDir(t), s.o.TempDir(t)
-	if err := os.WriteFile(filepath.Join(project, "base.txt"), []byte("base"), 0o644); err != nil {
+// projectAndMe checks that each instance has its own project and person
+// directories, empty at the start, that the host fills and reads back.
+func (s suite) projectAndMe(t *testing.T) {
+	ctx := context.Background()
+	inst := s.start(t, isolate.Spec{})
+	if err := inst.Project().Write(ctx, "memory/base.txt", strings.NewReader("base")); err != nil {
 		t.Fatal(err)
 	}
-	inst := s.start(t, isolate.Spec{Mounts: isolate.Mounts{Project: project, Me: me}})
-	r := must(t, s.sh(inst, "cat ../project/base.txt; echo mine > ../me/note.txt"), "mounts")
-	if r.stdout != "base" {
-		t.Fatalf("project: stdout %q", r.stdout)
+	if err := inst.Me().Write(ctx, "memory/old.txt", strings.NewReader("old")); err != nil {
+		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(me, "note.txt")); err != nil || string(got) != "mine\n" {
-		t.Fatalf("me/note.txt = %q, %v", got, err)
+	script := "cat ../project/memory/base.txt ../me/memory/old.txt; echo mine > ../me/memory/note.txt; rm ../me/memory/old.txt"
+	if r := must(t, s.sh(inst, script), "project and me"); r.stdout != "baseold" {
+		t.Fatalf("stdout %q", r.stdout)
+	}
+	if got := readKey(t, inst.Me(), "memory/note.txt"); got != "mine\n" {
+		t.Fatalf("me/memory/note.txt = %q", got)
+	}
+	if keys, err := inst.Me().List(ctx, ""); err != nil || strings.Join(keys, ",") != "memory/note.txt" {
+		t.Fatalf("me keys %v, %v", keys, err)
 	}
 
-	if _, err := s.d.Start(context.Background(), isolate.Spec{Image: s.o.Image, Mounts: isolate.Mounts{Project: filepath.Join(project, "missing")}}); err == nil {
-		t.Fatal("a missing mount started")
+	// A second instance of the same spec shares none of it.
+	other := s.start(t, isolate.Spec{})
+	for name, ws := range map[string]workspace.Workspace{"project": other.Project(), "me": other.Me()} {
+		if keys, err := ws.List(ctx, ""); err != nil || len(keys) != 0 {
+			t.Errorf("a fresh instance's %s holds %v, %v", name, keys, err)
+		}
 	}
+	if r := s.sh(other, "ls -A ../project ../me"); r.err != nil || r.code != 0 || strings.Contains(r.stdout, "memory") {
+		t.Errorf("a fresh instance sees another's files: %+v", r)
+	}
+}
+
+func readKey(t *testing.T, ws workspace.Workspace, key string) string {
+	t.Helper()
+	rc, err := ws.Read(context.Background(), key)
+	if err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func (s suite) timeout(t *testing.T) {
@@ -263,7 +289,6 @@ func (s suite) rejectsInvalid(t *testing.T) {
 	for name, spec := range map[string]isolate.Spec{
 		"no image":  {},
 		"root user": {Image: s.o.Image, User: "0"},
-		"relative":  {Image: s.o.Image, Mounts: isolate.Mounts{Project: "rel"}},
 	} {
 		if inst, err := s.d.Start(ctx, spec); !errors.Is(err, isolate.ErrInvalidSpec) {
 			if inst != nil {
@@ -350,12 +375,14 @@ func (s suite) compartments(t *testing.T) {
 }
 
 func (s suite) boundary(t *testing.T) {
-	project := s.o.TempDir(t)
 	res := isolate.Resources{CPUMillis: 500, MemoryBytes: 64 << 20, PIDs: 64, DiskBytes: 8 << 20}
-	inst := s.start(t, isolate.Spec{Mounts: isolate.Mounts{Project: project}, Resources: res})
+	inst := s.start(t, isolate.Spec{Resources: res})
+	if err := inst.Project().Write(context.Background(), "base.txt", strings.NewReader("base")); err != nil {
+		t.Fatal(err)
+	}
 	checks := []struct{ name, script string }{
 		{"root filesystem is read only", "! touch /etc/x 2>/dev/null"},
-		{"project is read only", "! touch ../project/x 2>/dev/null"},
+		{"project is read only", "! touch ../project/x 2>/dev/null && ! rm -f ../project/base.txt 2>/dev/null && [ -e ../project/base.txt ]"},
 		{"user is not root", `[ "$(id -u)" != 0 ]`},
 		{"no capabilities", `grep -q '^CapEff:[[:space:]]*0000000000000000$' /proc/self/status`},
 		{"no new privileges", `grep -q '^NoNewPrivs:[[:space:]]*1$' /proc/self/status`},

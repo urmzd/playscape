@@ -291,12 +291,15 @@ func TestCloseRemovesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	work := inst.(*instance).work
+	root := inst.(*instance).root
+	if err := inst.Me().Write(context.Background(), "memory/note.md", strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
 	if err := inst.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("work directory survived: %v", err)
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("instance directory survived: %v", err)
 	}
 	assertNoLeftovers(t, d)
 }
