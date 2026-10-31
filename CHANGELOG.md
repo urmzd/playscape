@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.0 (2026-10-31)
+
+### Breaking
+
+- **isolate**: drive a remote Docker daemon from the docker driver (#21) ([4aea447](https://github.com/urmzd/playscape/commit/4aea447e58ec1db5cfe73e8a450431a7be84f34c))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.11.0...v0.12.0)
+
+
 ## 0.11.0 (2026-10-31)
 
 ### Breaking
