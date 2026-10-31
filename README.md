@@ -244,6 +244,17 @@ defer gate.Revoke(lease.ID())
 env := egress.ProxyEnv("gate:3128", token) // add to every command of this lease
 ```
 
+To keep the Docker socket off the machine your program runs on, drive a daemon on a sandbox host instead. `Config.Host` names it (`tcp://`, `ssh://` or `unix://`), and a `tcp://` host needs `Config.TLSDir` with `ca.pem`, `cert.pem` and `key.pem`:
+
+```go
+drv, err := docker.New(docker.Config{
+	Host:   "tcp://sandbox.internal:2376",
+	TLSDir: "/etc/playscape/docker-tls",
+})
+```
+
+With a remote daemon, `/work`, `/project` and `/me` are Docker volumes on the sandbox host, and `Files()`, `Project()` and `Me()` reach them through `docker exec` in the workload container, so nothing outside the sandbox opens the run's files.
+
 Inside an instance, the run's files are at `/work` (where commands start, and what `lease.Files()` reads and writes from the host), the project at `/project` (read only), the person volume at `/me`, and the socket directory shared with the connectors compartment at `/run/playscape`. Every zero `Spec` field is the strictest choice: no network, no extra mounts, a non-root user, small default limits. `docker.New` refuses a runtime that shares the host kernel (`ErrInsecureRuntime`) unless `Config.InsecureDevelopmentRuntime` is set, for machines without gVisor; it then warns on every `New`. `isolate/local` implements the same interface with no isolation at all, for tests. Every driver runs the `isolatetest` conformance suite, and CI runs it against Docker with both runc and runsc.
 
 ### Sandboxed shell on Kubernetes
@@ -269,6 +280,7 @@ Each call becomes one batch/v1 Job: non-root, no privilege escalation, all capab
 - **The workspace policy is not process isolation.** It confines what a tool reaches through the workspace. The `cli` provider, `runner.Local`, `isolate/local` and `playscape run` start host processes with your privileges; isolation needs `pkg/isolate/docker` or `pkg/runner/k8s`.
 - **The egress gate cannot inject into HTTPS it only tunnels.** A `CONNECT` is allowed or denied by host and port; what is inside is encrypted, so a placeholder sent through it arrives unchanged. Injection works for plain HTTP and for gate-terminated routes (the sandbox speaks HTTP to the gate, the gate speaks TLS upstream). The lease token is in the sandbox's environment; anyone on the egress network who learns it gets that lease's allowlist until `Revoke`. Instances on one egress network can reach each other, not only the gate.
 - **Docker instances**: `/work` is a host directory and is not size limited by the driver; only `/tmp` is. Put `Config.WorkRoot` on a filesystem of its own (a sized tmpfs, a loop device or an XFS project quota) so a run cannot fill the host's disk. A command that times out restarts its compartment, which ends every other command running there. The daemon must be able to bind-mount `Config.WorkRoot` (with Docker Desktop or Colima, a directory shared with the VM). With runc (development only), the boundary is the host kernel's namespaces, which is not enough for hostile code. Register runsc with `sudo runsc install -- --oci-seccomp --host-uds=all`: without `--oci-seccomp` gVisor ignores the seccomp profile (its own kernel is still the boundary), and without `--host-uds=all` the compartments cannot connect over their socket directory. Under gVisor, Docker's embedded DNS is unreachable on hosts with nftables NAT, so name the egress gate by IP address in `Spec.Network.Proxy`. Under gVisor the driver sets the PIDs limit inside the sandbox with `docker exec --user 0 ... /bin/sh`, so the image needs `/bin/sh`. Debuggers and tracers (`ptrace`) do not work inside an instance.
+- **Remote Docker daemons** (`Config.Host`): `/work`, `/project` and `/me` are volumes on the sandbox host, not size limited by the driver, so give the daemon's data root a filesystem of its own. `/project` is read only to the workload because root owns it, not through a read-only mount: the host writes it as root through the same container. `Files()`, `Project()` and `Me()` run a shell script per call, so the image needs `sh`, `cat`, `mkdir`, `dirname`, `rm`, `find` and `chmod` (busybox has them), and `Read` copies the file to a temporary file on your machine before returning it. Whoever holds the daemon's client certificate is root on the sandbox host, so give that host nothing else to lose.
 - **Compartments** share one 1 MiB tmpfs directory, meant for sockets. Anything either side writes there, the other can read.
 - **Pools** fix mounts at start, so a spec with a person volume warms only that person's instances. Warm instances are not health checked before a lease, and every spec a pool has seen stays warm until evicted.
 - **Kubernetes runs** see no shared workspace (scratch only), stdout and stderr arrive as one stream, and status is polled, not watched.

@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/urmzd/playscape/pkg/isolate"
 	"github.com/urmzd/playscape/pkg/isolate/isolatetest"
+	"github.com/urmzd/playscape/pkg/workspace"
 )
 
 // testImage has a shell, busybox tools and python3. Override it with
@@ -238,6 +240,7 @@ func dockerDriver(t *testing.T, cfg Config) (*Driver, isolatetest.Options) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.track = func(id string) { started.Store(id, true) }
 	return d, isolatetest.Options{
 		Image:    image,
 		Env:      map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin"},
@@ -335,24 +338,175 @@ func TestPoolOverDocker(t *testing.T) {
 	assertNoLeftovers(t, d)
 }
 
-// assertNoLeftovers checks that no playscape container, volume or work
-// directory is left. The docker tests run one at a time, so any container
-// with the instance label is a leak.
+// started holds every instance ID this test process's drivers made, so
+// assertNoLeftovers ignores containers another process (a parallel run in
+// another checkout) owns on the same daemon.
+var started sync.Map
+
+// assertNoLeftovers checks that no container, volume or work directory of
+// an instance this process started is left. The docker tests in one
+// process run one at a time, so any of them still there is a leak.
 func assertNoLeftovers(t *testing.T, d *Driver) {
 	t.Helper()
 	for _, args := range [][]string{
-		{"ps", "--all", "--filter", "label=" + InstanceLabel, "--format", "{{.Names}}"},
-		{"volume", "ls", "--filter", "label=" + InstanceLabel, "--format", "{{.Name}}"},
+		{"ps", "--all", "--filter", "label=" + InstanceLabel, "--format", `{{.Names}} {{.Label "` + InstanceLabel + `"}}`},
+		{"volume", "ls", "--filter", "label=" + InstanceLabel, "--format", `{{.Name}} {{.Label "` + InstanceLabel + `"}}`},
 	} {
 		out, err := exec.Command("docker", args...).Output()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if left := strings.TrimSpace(string(out)); left != "" {
-			t.Errorf("left behind: %s", left)
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			name, id, _ := strings.Cut(line, " ")
+			if _, ours := started.Load(id); ours {
+				t.Errorf("left behind: %s", name)
+			}
 		}
 	}
 	if entries, _ := os.ReadDir(d.workRoot); len(entries) > 0 {
 		t.Errorf("work directories left behind: %d", len(entries))
 	}
+}
+
+func TestHostArgs(t *testing.T) {
+	tls := t.TempDir()
+	for _, f := range []string{"ca.pem", "cert.pem", "key.pem"} {
+		if err := os.WriteFile(filepath.Join(tls, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		host, tls string
+		want      string // joined flags, or "" for an error
+	}{
+		{"", "", "  "},
+		{"unix:///run/sandbox.sock", "", " --host unix:///run/sandbox.sock "},
+		{"ssh://me@sandbox", "", " --host ssh://me@sandbox "},
+		{"tcp://sandbox:2376", tls, " --host tcp://sandbox:2376 --tlsverify --tlscacert " + tls + "/ca.pem --tlscert " + tls + "/cert.pem --tlskey " + tls + "/key.pem "},
+		// A daemon on plain TCP is root for anyone who reaches it.
+		{"tcp://sandbox:2375", "", ""},
+		{"tcp://sandbox:2376", t.TempDir(), ""}, // no certificates
+		{"tcp://sandbox:2376", "rel", ""},
+		{"", tls, ""},
+		{"http://sandbox", "", ""},
+		{"sandbox:2376", "", ""},
+		{"--tlsverify=false", "", ""},
+		{"unix:///a b", "", ""},
+	} {
+		args, err := hostArgs(c.host, c.tls)
+		got := " " + strings.Join(args, " ") + " "
+		if c.want == "" {
+			if err == nil {
+				t.Errorf("hostArgs(%q, %q) = %q, want an error", c.host, c.tls, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("hostArgs(%q, %q) = %q, %v, want %q", c.host, c.tls, got, err, c.want)
+		}
+	}
+}
+
+// A remote daemon does not share this machine's users.
+func TestRemoteDefaultUser(t *testing.T) {
+	d := &Driver{bin: "docker", runtime: RuntimeRunc, remote: true}
+	if got := d.userOr(""); got != DefaultUser {
+		t.Errorf("remote default user %q, want %s", got, DefaultUser)
+	}
+}
+
+// remoteDriver is dockerDriver driving the local daemon as if it were
+// remote: through its endpoint, with the work directory in a volume.
+func remoteDriver(t *testing.T) (*Driver, isolatetest.Options) {
+	t.Helper()
+	dockerDriver(t, Config{}) // skips without a daemon
+	out, err := exec.Command("docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}").Output()
+	if err != nil {
+		t.Fatalf("docker context inspect: %v", err)
+	}
+	d, opts := dockerDriver(t, Config{Host: strings.TrimSpace(string(out))})
+	if !d.remote {
+		t.Fatal("the driver is not remote")
+	}
+	return d, opts
+}
+
+func TestRemoteConformance(t *testing.T) {
+	d, opts := remoteDriver(t)
+	isolatetest.Run(t, d, opts)
+	assertNoLeftovers(t, d)
+}
+
+// Files on a remote instance treat links the workload plants as it does
+// not own: never read, listed or written through, and files outlive a
+// command that timed out.
+func TestRemoteFilesIgnorePlantedLinks(t *testing.T) {
+	d, opts := remoteDriver(t)
+	ctx := context.Background()
+	inst, err := d.Start(ctx, isolate.Spec{Image: opts.Image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = inst.Close(ctx) }()
+	sh := func(script string, timeout time.Duration) error {
+		st, err := inst.Exec(ctx, isolate.Command{Argv: []string{"/bin/sh", "-c", script}, Env: opts.Env, Timeout: timeout}, isolate.Stdio{})
+		if err == nil && st.Code != 0 {
+			err = fmt.Errorf("exit %d", st.Code)
+		}
+		return err
+	}
+	if err := sh("echo secret > /tmp/target && ln -s /etc/hostname leak && ln -s /tmp/target over && mkdir d && echo x > d/f", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	files := inst.Files()
+	if _, err := files.Read(ctx, "leak"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Errorf("read through a link: err = %v, want ErrNotFound", err)
+	}
+	if err := files.Delete(ctx, "leak"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Errorf("delete a link: err = %v, want ErrNotFound", err)
+	}
+	if keys, err := files.List(ctx, ""); err != nil || strings.Join(keys, ",") != "d/f" {
+		t.Errorf("list = %v, %v, want only d/f", keys, err)
+	}
+	if keys, err := files.List(ctx, "d"); err != nil || strings.Join(keys, ",") != "d/f" {
+		t.Errorf("list d = %v, %v", keys, err)
+	}
+	if keys, err := files.List(ctx, "dd"); err != nil || len(keys) != 0 {
+		t.Errorf("list dd = %v, %v, want none (a sibling prefix)", keys, err)
+	}
+	if err := files.Write(ctx, "over", strings.NewReader("mine")); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh(`[ ! -L over ] && [ "$(cat over)" = mine ] && [ "$(cat /tmp/target)" = secret ]`, time.Minute); err != nil {
+		t.Errorf("write went through the link: %v", err)
+	}
+	if _, err := files.Read(ctx, "../etc/passwd"); !errors.Is(err, workspace.ErrInvalidKey) {
+		t.Errorf("traversal: err = %v", err)
+	}
+	if _, err := files.Read(ctx, "missing"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Errorf("missing: err = %v", err)
+	}
+	// A timed-out command restarts the container; the volume stays.
+	if err := sh("sleep 30", 300*time.Millisecond); !errors.Is(err, isolate.ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	rc, err := files.Read(ctx, "over")
+	if err != nil {
+		t.Fatalf("after a restart: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "mine" {
+		t.Fatalf("after a restart: %q", got)
+	}
+	if err := files.Delete(ctx, "over"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.List(ctx, ""); !errors.Is(err, isolate.ErrClosed) {
+		t.Errorf("list after close: err = %v, want ErrClosed", err)
+	}
+	assertNoLeftovers(t, d)
 }
