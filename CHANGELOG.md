@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0 (2026-10-31)
+
+### Breaking
+
+- **isolate**: give each instance its own /project and /me workspaces (#20) ([41558c5](https://github.com/urmzd/playscape/commit/41558c54d708ba129908addcc9b3249089ace613))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.10.0...v0.11.0)
+
+
 ## 0.10.0 (2026-10-30)
 
 ### Breaking
