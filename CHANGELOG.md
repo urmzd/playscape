@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.1 (2026-11-03)
+
+### Bug Fixes
+
+- deprecate module, moved to urmzd/orchagent (#22) ([4cdb9a3](https://github.com/urmzd/playscape/commit/4cdb9a34c61bbd4c784627d865d0f7eb652b2edc))
+
+[Full Changelog](https://github.com/urmzd/playscape/compare/v0.12.0...v0.12.1)
+
+
 ## 0.12.0 (2026-10-31)
 
 ### Breaking
