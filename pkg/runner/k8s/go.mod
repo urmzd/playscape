@@ -1,3 +1,4 @@
+// Deprecated: moved to github.com/urmzd/orchagent/sandbox/runner/k8s
 module github.com/urmzd/playscape/pkg/runner/k8s
 
 go 1.26.4
